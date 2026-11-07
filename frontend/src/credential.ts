@@ -1,3 +1,4 @@
+import { notifyDeviceForgotten } from './device-sync.ts';
 const encoder = new TextEncoder();
 const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 export type Credential = { id: string; secret: string; bootstrapKey: string; courseId?: string; backup: 'unconfirmed' | 'export_action_taken' | 'restore_checked' };
@@ -66,4 +67,5 @@ export async function forgetCredential() {
     });
   } finally { db.close(); }
   if (await readCredential() !== undefined) throw new Error('STORAGE_UNAVAILABLE');
+  notifyDeviceForgotten();
 }

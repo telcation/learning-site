@@ -49,3 +49,16 @@ test('forget clears device data after commit and verifies absence', async () => 
   try { await forgetCredential(); assert.equal(stored, undefined); assert.equal(closed, 2); }
   finally { if (original) Object.defineProperty(globalThis, 'indexedDB', original); else delete (globalThis as any).indexedDB; }
 });
+
+test('forget notification reaches other tabs without credential data', async () => {
+  const { watchDeviceForgotten, notifyDeviceForgotten } = await import('./device-sync.ts');
+  let stop = () => {};
+  let timer: ReturnType<typeof setTimeout>;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('notification timeout')), 2000);
+      stop = watchDeviceForgotten(resolve);
+      notifyDeviceForgotten();
+    });
+  } finally { clearTimeout(timer!); stop(); }
+});

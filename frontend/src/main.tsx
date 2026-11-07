@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { bearer, createCredential, exportCode, importCode, readCredential, saveCredential, forgetCredential } from './credential';
 import type { Credential } from './credential';
 import './style.css';
+import { watchDeviceForgotten } from './device-sync';
 
 type Course = {id:string;title:string;language:'java'|'python'|null;version:number};
 type Home = {revision:number;review_pending_count:number;enrolled_course_version_ids:string[];retention_kind:string;empty_expires_on:string|null;next_action:{kind:string;unit_version_id:string;course_version_id:string}};
@@ -23,9 +24,34 @@ async function api<T>(path:string, credential?:Credential, body?:unknown):Promis
 const errorText = (e:unknown) => e instanceof ApiError && [401,410].includes(e.status) ? '学習キーを確認できません。新しい記録は自動作成していません。保存済みの学習コードで復旧してください。' : e instanceof ApiError && e.code === 'REQUIREMENTS_UNMET' ? 'まだ未達成の確認問題があります。すべての問題に正解してから修了を確認してください。' : e instanceof Error && e.message === 'STORAGE_UNAVAILABLE' ? 'このブラウザーに学習キーを保存できません。保存を許可したブラウザーをご利用ください。' : '処理が完了しませんでした。通信状態を確認して、もう一度お試しください。';
 
 function App() {
+  // Reload discards displayed secrets and in-flight component state together.
+  useEffect(() => watchDeviceForgotten(() => window.location.reload()), []);
   const [catalog,setCatalog]=useState<Course[]>([]), [credential,setCredential]=useState<Credential>(), [home,setHome]=useState<Home>(), [material,setMaterial]=useState<Material>(), [progress,setProgress]=useState<Progress>();
   const [screen,setScreen]=useState<'home'|'learn'|'progress'>('home'), [question,setQuestion]=useState<Question>(), [choice,setChoice]=useState(''), [result,setResult]=useState<Result>(), [busy,setBusy]=useState(true), [error,setError]=useState('');
   const [forget,setForget]=useState(false);
+  useEffect(() => {
+    if (!credential) return;
+    let disposed = false;
+    const check = async () => {
+      try {
+        const saved = await readCredential();
+        if (!disposed && (saved?.id !== credential.id || saved?.secret !== credential.secret)) window.location.reload();
+      } catch {
+        // Fail closed when a resumed tab cannot verify its saved credential.
+        if (!disposed) window.location.reload();
+      }
+    };
+    const visible = () => { if (document.visibilityState === 'visible') void check(); };
+    window.addEventListener('focus', check);
+    window.addEventListener('pageshow', check);
+    document.addEventListener('visibilitychange', visible);
+    return () => {
+      disposed = true;
+      window.removeEventListener('focus', check);
+      window.removeEventListener('pageshow', check);
+      document.removeEventListener('visibilitychange', visible);
+    };
+  }, [credential]);
   const [backup,setBackup]=useState(false),[restore,setRestore]=useState(false),[code,setCode]=useState(''),[restoreInput,setRestoreInput]=useState(''),[storage,setStorage]=useState('確認中'),[storageFailed,setStorageFailed]=useState(false);
   async function load(c:Credential) {
     const h=await api<Home>('/learning-home',c);
