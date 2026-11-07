@@ -54,3 +54,16 @@ export async function saveCredential(c: Credential) {
   const readback = await readCredential();
   if (readback?.secret !== c.secret || readback?.id !== c.id) throw new Error('STORAGE_UNAVAILABLE');
 }
+
+export async function forgetCredential() {
+  const db = await database();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction('device', 'readwrite');
+      tx.objectStore('device').clear();
+      tx.oncomplete = () => resolve();
+      tx.onerror = tx.onabort = () => reject(new Error('STORAGE_UNAVAILABLE'));
+    });
+  } finally { db.close(); }
+  if (await readCredential() !== undefined) throw new Error('STORAGE_UNAVAILABLE');
+}

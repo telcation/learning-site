@@ -21,3 +21,31 @@ for (const vector of negatives) {
     else await assert.rejects(importCode(vector.input));
   });
 }
+
+// Exercise the transaction boundary: memory must only be cleared after commit.
+test('forget clears device data after commit and verifies absence', async () => {
+  const { forgetCredential } = await import('./credential.ts');
+  let stored: unknown = { secret: 'local-only', backup: 'unconfirmed' };
+  let closed = 0;
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'indexedDB');
+  Object.defineProperty(globalThis, 'indexedDB', { configurable: true, value: {
+    open() {
+      const request: any = {};
+      request.result = {
+        close() { closed++; },
+        transaction(_store: string, mode: string) {
+          const tx: any = {};
+          tx.objectStore = () => ({
+            clear() { queueMicrotask(() => { stored = undefined; tx.oncomplete(); }); },
+            get() { const req: any = {}; queueMicrotask(() => { req.result = stored; req.onsuccess(); }); return req; }
+          });
+          return tx;
+        }
+      };
+      queueMicrotask(() => request.onsuccess());
+      return request;
+    }
+  }});
+  try { await forgetCredential(); assert.equal(stored, undefined); assert.equal(closed, 2); }
+  finally { if (original) Object.defineProperty(globalThis, 'indexedDB', original); else delete (globalThis as any).indexedDB; }
+});
