@@ -1,0 +1,44 @@
+{
+  "cases": [
+    {
+      "name": "lowercase",
+      "input": "ls1-aaaqeaye-audaocaj-bifqydio-b4ibceqt-cqkrmfyy-denbwha5-dypqwwgf",
+      "accepted": true
+    },
+    {
+      "name": "ungrouped",
+      "input": "LS1-AAAQEAYEAUDAOCAJBIFQYDIOB4IBCEQTCQKRMFYYDENBWHA5DYPQWWGF",
+      "accepted": true
+    },
+    {
+      "name": "outer-space",
+      "input": " LS1-AAAQEAYE-AUDAOCAJ-BIFQYDIO-B4IBCEQT-CQKRMFYY-DENBWHA5-DYPQWWGF\n",
+      "accepted": true
+    },
+    {
+      "name": "invalid-zero",
+      "input": "LS1-0AAQEAYE-AUDAOCAJ-BIFQYDIO-B4IBCEQT-CQKRMFYY-DENBWHA5-DYPQWWGF",
+      "accepted": false
+    },
+    {
+      "name": "fullwidth",
+      "input": "ＬＳ１-AAAQEAYE-AUDAOCAJ-BIFQYDIO-B4IBCEQT-CQKRMFYY-DENBWHA5-DYPQWWGF",
+      "accepted": false
+    },
+    {
+      "name": "internal-space",
+      "input": "LS1-AAAQEA YE-AUDAOCAJ-BIFQYDIO-B4IBCEQT-CQKRMFYY-DENBWHA5-DYPQWWGF",
+      "accepted": false
+    },
+    {
+      "name": "check-mutation",
+      "input": "LS1-AAAQEAYE-AUDAOCAJ-BIFQYDIO-B4IBCEQT-CQKRMFYY-DENBWHA5-DYPQWWGA",
+      "accepted": false
+    },
+    {
+      "name": "transposition",
+      "input": "LS1-AAQAEAYEAUDAOCAJBIFQYDIOB4IBCEQTCQKRMFYYDENBWHA5DYPQWWGF",
+      "accepted": false
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "warning": "公開の試験値。実運用のキーに絶対に使わない",
+  "vectors": [
+    {
+      "fixture": "all-zero",
+      "secret_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "credential_id": "fe3fcb09-0775-4721-97c6-8038a14b207a",
+      "secret_b64url": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "paper_code": "LS1-AAAAAAAA-AAAAAAAA-AAAAAAAA-AAAAAAAA-AAAAAAAA-AAAAAAAA-AAAAUCOI"
+    },
+    {
+      "fixture": "ascending",
+      "secret_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "credential_id": "e3110de8-628d-452f-b1db-9653e47d3e15",
+      "secret_b64url": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "paper_code": "LS1-AAAQEAYE-AUDAOCAJ-BIFQYDIO-B4IBCEQT-CQKRMFYY-DENBWHA5-DYPQWWGF"
+    },
+    {
+      "fixture": "all-ff",
+      "secret_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "credential_id": "5b46be41-096e-419f-8a2c-8083630985f0",
+      "secret_b64url": "__________________________________________8",
+      "paper_code": "LS1-77777777-77777777-77777777-77777777-77777777-77777777-777QFCPS"
+    }
+  ]
+}

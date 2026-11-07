@@ -1,0 +1,86 @@
+<component name="InspectionProjectProfileManager">
+  <profile version="1.0">
+    <option name="myName" value="Project Default" />
+    <inspection_tool class="PyPackageRequirementsInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="ignoredPackages">
+        <list>
+          <option value="absl-py" />
+          <option value="astunparse" />
+          <option value="certifi" />
+          <option value="charset-normalizer" />
+          <option value="contourpy" />
+          <option value="cycler" />
+          <option value="flatbuffers" />
+          <option value="fonttools" />
+          <option value="gast" />
+          <option value="google-pasta" />
+          <option value="grpcio" />
+          <option value="h5py" />
+          <option value="idna" />
+          <option value="joblib" />
+          <option value="keras" />
+          <option value="kiwisolver" />
+          <option value="libclang" />
+          <option value="markdown-it-py" />
+          <option value="matplotlib" />
+          <option value="mdurl" />
+          <option value="ml_dtypes" />
+          <option value="namex" />
+          <option value="numpy" />
+          <option value="numpy-typing-compat" />
+          <option value="opt_einsum" />
+          <option value="optree" />
+          <option value="optype" />
+          <option value="packaging" />
+          <option value="pandas" />
+          <option value="protobuf" />
+          <option value="Pygments" />
+          <option value="pyparsing" />
+          <option value="python-dateutil" />
+          <option value="requests" />
+          <option value="rich" />
+          <option value="scikit-learn" />
+          <option value="scipy" />
+          <option value="scipy-stubs" />
+          <option value="seaborn" />
+          <option value="six" />
+          <option value="tensorflow" />
+          <option value="termcolor" />
+          <option value="threadpoolctl" />
+          <option value="typing_extensions" />
+          <option value="tzdata" />
+          <option value="urllib3" />
+          <option value="wrapt" />
+          <option value="torch" />
+          <option value="torchvision" />
+          <option value="opencv-python" />
+          <option value="ultralytics" />
+          <option value="Pillow" />
+          <option value="flask" />
+          <option value="gunicorn" />
+          <option value="annotated-types" />
+          <option value="cffi" />
+          <option value="cryptography" />
+          <option value="google-ai-generativelanguage" />
+          <option value="google-api-core" />
+          <option value="google-api-python-client" />
+          <option value="google-auth" />
+          <option value="google-auth-httplib2" />
+          <option value="google-generativeai" />
+          <option value="googleapis-common-protos" />
+          <option value="grpcio-status" />
+          <option value="httplib2" />
+          <option value="proto-plus" />
+          <option value="pyasn1" />
+          <option value="pyasn1_modules" />
+          <option value="pycparser" />
+          <option value="pydantic" />
+          <option value="pydantic_core" />
+          <option value="tqdm" />
+          <option value="typing-inspection" />
+          <option value="uritemplate" />
+        </list>
+      </option>
+    </inspection_tool>
+  </profile>
+</component>
