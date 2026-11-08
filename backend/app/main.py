@@ -14,7 +14,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
 from .content import COURSES, UNITS, QUESTIONS, ASSIGNMENTS, OBJECTIVES, QUESTION_OBJECTIVES, public_question
-from .objectives import objective_progress
+from .objectives import objective_progress, select_goal_question
 from .security import parse_token, digest, UUID_PATTERN
 from .deletions import DeletionLedger, purge_record
 from .retention import retention_status
@@ -488,13 +488,26 @@ def create_app(database_url=None, pepper=None):
 
     @app.post('/api/v1/units/{unit_id}/review-next')
     def review(unit_id: str, request: Request):
-        body(request, [])
+        value = request.state.body
+        goal_id = None
+        if isinstance(value, dict) and set(value) == {'objective_id'}:
+            goal_id = uuid(body(request, ['objective_id'])['objective_id'])
+        else:
+            body(request, [])
         with transaction() as c:
             r = owner(c, request)
             unit = enrolled_unit(c, r, unit_id)
+            if goal_id is not None and goal_id not in {goal['objective_id'] for goal in OBJECTIVES[unit_id]}:
+                raise Failure(404, 'NOT_FOUND')
             def action():
+                if goal_id is not None:
+                    history = c.execute(text('SELECT question_id,correct,sequence FROM attempts WHERE record_id=:rid ORDER BY sequence'), {'rid': r['id']})
+                    qid = select_goal_question(unit_id, goal_id, history)
+                    if qid is None:
+                        raise Failure(404, 'NOT_FOUND')
+                    return public_question(qid)
                 answers = latest(c, r['id'])
-                # This pilot has one question per mandatory objective; never switch objectives.
+                # Retain unit-wide selection for older clients sending {}.
                 q = next((q for q in unit['question_ids'] if not answers.get(q)), unit['question_ids'][0])
                 return public_question(q)
             return idempotent(c, request, action)
