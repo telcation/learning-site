@@ -9,11 +9,13 @@ from uuid import uuid4
 from contextlib import contextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 
 from .content import COURSES, UNITS, QUESTIONS, public_question
 from .security import parse_token, digest, UUID_PATTERN
+from .deletions import DeletionLedger, purge_record
 import re
 
 JST = timezone(timedelta(hours=9))
@@ -52,10 +54,27 @@ def create_app(database_url=None, pepper=None):
             'CREATE TABLE IF NOT EXISTS attempts (id TEXT PRIMARY KEY, record_id TEXT NOT NULL REFERENCES records(id), question_id TEXT NOT NULL, sequence INTEGER NOT NULL, choice_ids TEXT NOT NULL, correct INTEGER NOT NULL, UNIQUE(record_id, sequence))',
             'CREATE TABLE IF NOT EXISTS idempotency (credential_id TEXT NOT NULL, request_id TEXT NOT NULL, fingerprint TEXT NOT NULL, response TEXT NOT NULL, status INTEGER NOT NULL, expires_at INTEGER NOT NULL, PRIMARY KEY(credential_id,request_id))',
             'CREATE TABLE IF NOT EXISTS revoked_credentials (credential_id TEXT PRIMARY KEY, record_id TEXT NOT NULL REFERENCES records(id))',
+            'CREATE TABLE IF NOT EXISTS app_metadata (name TEXT PRIMARY KEY, value TEXT NOT NULL)',
         ]:
             c.exec_driver_sql(statement)
+    db_path = make_url(url).database
+    if not db_path or db_path == ':memory:':
+        raise RuntimeError('P1_FILE_DATABASE_REQUIRED')
+    with engine.begin() as c:
+        expected_id = c.execute(text("SELECT value FROM app_metadata WHERE name='deletion_ledger_id'")).scalar_one_or_none()
+        ledger = DeletionLedger(str(Path(db_path).resolve()) + '.deletions', expected_id)
+        if expected_id is None:
+            c.execute(text("INSERT INTO app_metadata VALUES ('deletion_ledger_id',:id)"), {'id': ledger.id})
+    # Reapply current tombstones before serving a restored/previously interrupted DB.
+    with engine.connect() as c:
+        c.exec_driver_sql('PRAGMA foreign_keys=ON')
+        c.exec_driver_sql('BEGIN IMMEDIATE')
+        for record_id in ledger.records():
+            purge_record(c, record_id)
+        c.commit()
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.state.engine = engine
+    app.state.ledger = ledger
 
     def error(status, code):
         return JSONResponse({'code': code, 'request_id': str(uuid4())}, status_code=status)
@@ -132,6 +151,8 @@ def create_app(database_url=None, pepper=None):
         record = c.execute(text('SELECT * FROM records WHERE credential_id=:cid'), {'cid': cid}).mappings().first()
         if not record or not hmac.compare_digest(record['secret_hmac'], digest(pepper, cid, secret)):
             raise Failure(401, 'UNAUTHORIZED')
+        if ledger.contains(record['id']):
+            raise Failure(401, 'UNAUTHORIZED')
         if record['empty_expires_on'] and record['empty_expires_on'] <= today().isoformat():
             raise Failure(410, 'RECORD_EXPIRED')
         return record
@@ -178,6 +199,7 @@ def create_app(database_url=None, pepper=None):
 
     @app.get('/api/v1/health')
     def health():
+        ledger.check()
         with engine.connect() as c:
             c.exec_driver_sql('SELECT 1')
         return {'status': 'ok'}
@@ -194,6 +216,7 @@ def create_app(database_url=None, pepper=None):
 
     @app.post('/api/v1/records')
     def bootstrap(request: Request):
+        ledger.check()
         b = body(request, ['course_version_id', 'study_route', 'preferred_language'])
         course = next((x for x in COURSES if x['id'] == b['course_version_id']), None)
         if not course or b['study_route'] != ('practice' if course['language'] else 'fe') or b['preferred_language'] != course['language']:
@@ -201,6 +224,9 @@ def create_app(database_url=None, pepper=None):
         cid, secret = token(request)
         with transaction() as c:
             if c.execute(text('SELECT 1 FROM revoked_credentials WHERE credential_id=:cid'), {'cid': cid}).first():
+                raise Failure(401, 'UNAUTHORIZED')
+            existing_id = c.execute(text('SELECT id FROM records WHERE credential_id=:cid'), {'cid': cid}).scalar_one_or_none()
+            if existing_id and ledger.contains(existing_id):
                 raise Failure(401, 'UNAUTHORIZED')
             def action():
                 if c.execute(text('SELECT 1 FROM records WHERE credential_id=:cid'), {'cid': cid}).first():
@@ -242,6 +268,22 @@ def create_app(database_url=None, pepper=None):
                 c.execute(text('DELETE FROM idempotency WHERE credential_id=:cid'), {'cid': r['credential_id']})
                 return dict(resource_id=r['id'], revision=r['revision']+1)
             return idempotent(c, request, action)
+
+    @app.post('/api/v1/records/me/delete')
+    def delete_record(request: Request):
+        b = body(request, ['confirm', 'revision'])
+        if b['confirm'] is not True or type(b['revision']) is not int or not 0 <= b['revision'] <= 2147483647:
+            raise Failure(400, 'INVALID_REQUEST')
+        uuid(request.headers.get('idempotency-key'))
+        with transaction() as c:
+            r = owner(c, request)
+            if r['revision'] != b['revision']:
+                raise Failure(409, 'REVISION_CONFLICT')
+            ledger.record(r['id'])
+            purge_record(c, r['id'])
+        # Replays use normal authorization and return 401 after successful deletion.
+        # Do not retain a credential or response cache just to authorize a retry.
+        return Response(status_code=204)
 
     @app.get('/api/v1/learning-home')
     def home(request: Request):
