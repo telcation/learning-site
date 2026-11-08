@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { latestPractice } from './practice';
 import type { Assignment, AssignmentPage, PracticeAttempt, PracticeRequest, SelfCheck } from './practice';
 
-export function PracticePanel({unitId,request,onSave}:{unitId:string;request:PracticeRequest;
+export function PracticePanel({unitId,request,onSave,busy,onOpenHistory}:{unitId:string;request:PracticeRequest;busy:boolean;onOpenHistory:()=>void;
   onSave:(assignmentId:string,checks:SelfCheck[])=>Promise<PracticeAttempt>}) {
   const [assignment,setAssignment]=useState<Assignment>(), [checks,setChecks]=useState<Record<string,boolean>>({});
   const [latest,setLatest]=useState<PracticeAttempt>(), [loading,setLoading]=useState(true), [saving,setSaving]=useState(false), [error,setError]=useState('');
@@ -29,8 +29,9 @@ export function PracticePanel({unitId,request,onSave}:{unitId:string;request:Pra
   }
   return <section className="panel practice-panel"><h2>実践課題を手元で確かめる（任意）</h2><p>自分のPCや手元のメモで取り組み、確認できた項目にチェックしてください。この課題は単元の修了条件には含みません。</p><p>ソースコード・実行結果・GitHubのURLを送る欄はありません。保存するのは各項目の確認結果だけで、サーバーが実行や正しさを検証した記録ではありません。</p>
     {loading&&<p role="status">実践課題を読み込んでいます。</p>}{error&&<p role="alert">{error}</p>}
-    {assignment&&<><p className="practice-requirements">{assignment.requirements}</p><p>手元の保存先の例：<code>{assignment.target_path}</code>（サーバーへは送信しません）</p><fieldset disabled={saving}><legend>自分で確認できた項目</legend>{assignment.rubric_items.map(item=><label key={item.rubric_item_id}><input type="checkbox" checked={checks[item.rubric_item_id]??false} onChange={e=>setChecks({...checks,[item.rubric_item_id]:e.target.checked})}/>{item.description}</label>)}</fieldset>
-    <button className="primary" disabled={saving} onClick={()=>void save()}>{saving?'保存中…':'現在の確認結果を記録する'}</button><p>未確認の項目があっても途中の状態を記録できます。</p>{latest&&<p role="status">前回の自己確認：{latest.self_confirmed?'全項目を確認済み':'確認途中'}（{latest.self_checks.filter(check=>check.met).length} / {latest.self_checks.length}項目）。この記録は講師評価や自動採点ではありません。</p>}</>}
+    {assignment&&<><p className="practice-requirements">{assignment.requirements}</p><p>手元の保存先の例：<code>{assignment.target_path}</code>（サーバーへは送信しません）</p><fieldset disabled={saving||busy}><legend>自分で確認できた項目</legend>{assignment.rubric_items.map(item=><label key={item.rubric_item_id}><input type="checkbox" checked={checks[item.rubric_item_id]??false} onChange={e=>setChecks({...checks,[item.rubric_item_id]:e.target.checked})}/>{item.description}</label>)}</fieldset>
+    <button className="primary" disabled={saving||busy} onClick={()=>void save()}>{saving?'保存中…':'現在の確認結果を記録する'}</button><p>未確認の項目があっても途中の状態を記録できます。</p>{latest&&<p role="status">前回の自己確認：{latest.self_confirmed?'全項目を確認済み':'確認途中'}（{latest.self_checks.filter(check=>check.met).length} / {latest.self_checks.length}項目）。この記録は講師評価や自動採点ではありません。</p>}</>}
+    <button className="secondary" disabled={saving||busy} onClick={onOpenHistory}>過去の実践記録を見る</button>
   </section>;
 }
 
