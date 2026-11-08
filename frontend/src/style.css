@@ -5,3 +5,4 @@
 .modal ol{padding-left:22px}.modal li{margin:18px 0}
 @media(max-width:760px){.shell>header{min-height:62px}}
 .danger{color:#92342b;border-color:#92342b}.primary.danger{color:#fff;background:#92342b}
+.recovery-field{display:block;margin:18px 0}.recovery-field input{display:block;width:100%;margin-top:8px;padding:10px;border:1px solid #becbb6;border-radius:7px}
