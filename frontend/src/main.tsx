@@ -34,19 +34,19 @@ async function saveCredential(c: Credential) {
 }
 
 
-type Course = {id:string;title:string;language:'java'|'python'|null;version:number;available:boolean};
+type Course = {id:string;course_id:string;title:string;language:'java'|'python'|null;version:number;available:boolean};
 type Home = {revision:number;review_pending_count:number;enrolled_course_version_ids:string[];retention_kind:string;empty_expires_on:string|null;next_action:{kind:string;unit_version_id:string;course_version_id:string}};
 type Material = {title:string;markdown:string;revision:number};
 type Question = AnswerQuestion;
-type Progress = {state:string;correct_count:number;question_count:number};
+type Progress = {unit_version_id:string;state:string;correct_count:number;question_count:number};
 type Result = {correct:boolean;explanation:string;is_repeat:boolean};
 class ApiError extends Error { constructor(public code:string, public status:number) { super(code); } }
-async function api<T>(path:string, credential?:Credential, body?:unknown, requestId?:string):Promise<T> {
+async function api<T>(path:string, credential?:Credential, body?:unknown, requestId?:string, method:'POST'|'PUT'='POST'):Promise<T> {
   if (ended || temporarySession && !temporarySession.check()) throw new Error('SESSION_ENDED');
   const headers:Record<string,string> = {};
   if (credential) headers.Authorization = bearer(credential);
   if (body !== undefined) { headers['Content-Type']='application/json'; headers['Idempotency-Key']=requestId ?? (path === '/records' && credential ? credential.bootstrapKey : crypto.randomUUID()); }
-  const response = await fetch('/api/v1'+path, {method: body === undefined ? 'GET' : 'POST',headers,body:body === undefined ? undefined : JSON.stringify(body),cache:'no-store',referrerPolicy:'no-referrer',signal:requests.signal});
+  const response = await fetch('/api/v1'+path, {method: body === undefined ? 'GET' : method,headers,body:body === undefined ? undefined : JSON.stringify(body),cache:'no-store',referrerPolicy:'no-referrer',signal:requests.signal});
   const value = response.status === 204 ? undefined : await response.json();
   if (ended || temporarySession && !temporarySession.check()) throw new Error('SESSION_ENDED');
   if (!response.ok) throw new ApiError(value?.code || 'UNAVAILABLE', response.status);
@@ -109,7 +109,7 @@ function App() {
   const [backup,setBackup]=useState(false),[restore,setRestore]=useState(false),[code,setCode]=useState(''),[restoreInput,setRestoreInput]=useState(''),[storage,setStorage]=useState('確認中'),[storageFailed,setStorageFailed]=useState(false);
   async function load(c:Credential) {
     const h=await api<Home>('/learning-home',c);
-    const [m,p]=await Promise.all([api<Material>(`/units/${h.next_action.unit_version_id}/material`), api<Progress[]>('/progress',c)]); setMaterial(m);setProgress(p[0]);setHome(h);
+    const [m,p]=await Promise.all([api<Material>(`/units/${h.next_action.unit_version_id}/material`), api<Progress[]>('/progress',c)]); if(home&&home.next_action.unit_version_id!==h.next_action.unit_version_id){setQuestion(undefined);setChoice([]);setResult(undefined);} setMaterial(m);setProgress(p.find(item=>item.unit_version_id===h.next_action.unit_version_id));setHome(h);
   }
   async function perform(fn:()=>Promise<void>) {setBusy(true);setError('');try{await fn();}catch(e){setError(errorText(e));}finally{setBusy(false);}}
   useEffect(()=>{void perform(async()=>{setCatalog(await api<Course[]>('/catalog')); let c:Credential|undefined;try{c=temporary ? undefined : await readCredential();}catch{setStorageFailed(true);throw new Error('STORAGE_UNAVAILABLE');} if(c){setCredential(c);await load(c);} setStorage(temporary ? '一時利用：このタブのメモリーのみ（端末に保存しません）' : navigator.storage?.persisted && await navigator.storage.persisted()?'永続保存が許可済み':'ブラウザーによる通常保存');});},[]);
@@ -122,8 +122,23 @@ function App() {
     if(!temporary && navigator.storage?.persist){try{setStorage(await navigator.storage.persist()?'永続保存が許可済み':'ブラウザーによる通常保存');}catch{setStorage('保存の持続性は不明');}}
     await api('/records',c,{course_version_id:course.id,study_route:course.language?'practice':'fe',preferred_language:course.language});await load(c);
   });}
+  async function switchCourse(course:Course) {
+    if(!credential||!home)return;
+    await perform(async()=>{
+      setQuestion(undefined);setChoice([]);setResult(undefined);
+      let target=course.id;
+      if(!home.enrolled_course_version_ids.includes(target)) {
+        const ack=await api<{resource_id:string}>(`/enrollments/${target}`,credential,{});target=ack.resource_id;
+      }
+      const [outline,current]=await Promise.all([api<{unit_ids:string[]}>(`/courses/${target}/outline`),api<Home>('/learning-home',credential)]);
+      try { await api('/learning-position',credential,{unit_version_id:outline.unit_ids[0],revision:current.revision},undefined,'PUT'); }
+      catch(e){if(e instanceof ApiError&&e.code==='REVISION_CONFLICT'){await load(credential);setError('別の操作で記録が更新されたため、最新状態を読み込みました。切り替え先をもう一度選んでください。');return;}throw e;}
+      await load(credential);setScreen('home');
+    });
+  }
   async function nextQuestion() {if(!credential||!home)return;await perform(async()=>{const q=await api<Question>(`/units/${home.next_action.unit_version_id}/review-next`,credential,{});setQuestion(q);setChoice(initialAnswer(q));setResult(undefined);});}
   const selected=catalog.find(c=>c.id===home?.next_action.course_version_id);
+  const courseOptions=home?catalog.filter(course=>home.enrolled_course_version_ids.includes(course.id)||course.available&&!home.enrolled_course_version_ids.some(id=>catalog.find(c=>c.id===id)?.course_id===course.course_id)):[];
   const complete=progress?.state==='completed';
   const percent=progress?Math.round(progress.correct_count/progress.question_count*100):0;
   const text=material?.markdown.split('```') || [];
@@ -135,9 +150,10 @@ function App() {
       {error&&<div className="error" role="alert">{error}<button onClick={()=>setRestore(true)}>学習コードで復旧</button></div>}
       {busy&&<p role="status" className="loading">読み込み・保存中…</p>}
       {!home&&screen==='home'&&<><div className="section-heading"><h2>学びたいコースを選ぶ</h2><span>3つの入口からスタート</span></div><div className="course-grid">{catalog.filter(c=>c.available).map((c,i)=><article className="course-card" key={c.id}><div className={'language-icon lang-'+i}>{c.language==='python'?'Py':c.language==='java'?'Jv':'FE'}</div><span className="tag">{c.language?'プログラミング実践':'資格の基礎'}</span><h3>{c.title}</h3><p>{c.language?'条件分岐と繰り返しから、処理の流れを学ぶ。':'疑似言語を読み、変数の変化を追う。言語環境の準備は不要です。'}</p><small>入門 · 教材1単元／確認問題{c.version===2?4:2}問</small><button className="primary" disabled={busy||storageFailed||!!credential&&credential.courseId!==c.id} onClick={()=>void start(c)}>このコースで始める <span>→</span></button></article>)}</div><p className="muted">既に学習コードをお持ちの方は <button className="text-button" onClick={()=>setRestore(true)}>学習記録を復旧する →</button></p></>}
-      {home&&screen==='home'&&<><section className="resume"><div><span className="pill">{complete?'入門単元を修了':'学習をつづける'}</span><p className="course-name">{selected?.title}</p><h2>{material?.title}</h2><p>{complete?'次の教材は今後の開発で追加されます。復習もできます。':home.review_pending_count?'確認問題を振り返って、理解を深めましょう。':'順次・選択・反復。プログラムの基本を学びましょう。'}</p><button className="primary" onClick={()=>setScreen('learn')}>{complete?'教材を復習する':'前回のつづきから'} <span>→</span></button></div><div className="ring" style={{'--progress':`${percent}%`} as React.CSSProperties}><div><strong>{percent}<small>%</small></strong><span>確認問題の正答</span></div></div></section><div className="stats"><div><span>確認問題</span><strong>{progress?.correct_count}<small> / {progress?.question_count}問 正解</small></strong></div><div><span>復習が必要な問題</span><strong>{home.review_pending_count}<small> 問</small></strong></div><div><span>単元の修了</span><strong>{complete?'1':'0'}<small> / 1単元</small></strong></div></div></>}
+      {home&&screen==='home'&&<><section className="resume"><div><span className="pill">{complete?'入門単元を修了':'学習をつづける'}</span><p className="course-name">{selected?.title}</p><h2>{material?.title}</h2><p>{complete?'この単元は修了しました。下の一覧から別のコースへ進むか、復習できます。':home.review_pending_count?'確認問題を振り返って、理解を深めましょう。':'順次・選択・反復。プログラムの基本を学びましょう。'}</p><button className="primary" onClick={()=>setScreen('learn')}>{complete?'教材を復習する':'前回のつづきから'} <span>→</span></button></div><div className="ring" style={{'--progress':`${percent}%`} as React.CSSProperties}><div><strong>{percent}<small>%</small></strong><span>確認問題の正答</span></div></div></section><div className="stats"><div><span>確認問題</span><strong>{progress?.correct_count}<small> / {progress?.question_count}問 正解</small></strong></div><div><span>復習が必要な問題</span><strong>{home.review_pending_count}<small> 問</small></strong></div><div><span>単元の修了</span><strong>{complete?'1':'0'}<small> / 1単元</small></strong></div></div></>}
       {home&&screen==='learn'&&<div className="learning-grid"><article className="lesson panel"><div className="section-heading"><span className="tag">LESSON 01</span><small>教材 第{material?.revision}版</small></div><h2>{material?.title}</h2><p className="lesson-text">{text[0]}</p><pre><code>{text[1]?.trim()}</code></pre><p>{text[2]}</p><div className="callout"><strong>手元で試してみよう</strong><p>{selected?.language?'コードの値を変えて、実行結果の違いを確かめましょう。プログラムはご自身のPCで実行します。':'紙や手元のメモに変数の変化を書き出しましょう。インストールは不要です。'}</p></div></article><section className="quiz panel"><div className="section-heading"><h2>理解を確かめる</h2><span className="tag">確認問題</span></div>{!question?<><p>{progress?.question_count}問の確認問題で、処理の流れを確かめましょう。</p><button className="primary" disabled={busy} onClick={()=>void nextQuestion()}>確認問題へ →</button></>:<><h3>{question.prompt}</h3><AnswerInput question={question} value={choice} onChange={setChoice} disabled={busy||!!result}/>{!result?<button className="primary" disabled={!choice.length||busy} onClick={()=>void perform(async()=>{setResult(await api<Result>(`/questions/${question.question_version_id}/attempts`,credential,{choice_ids:choice}));await load(credential!);})}>回答して解説を見る</button>:<div className={result.correct?'feedback correct':'feedback'} role="status"><strong>{result.correct?'✓ 正解です':'もう一度、処理を追ってみよう'}</strong><p>{result.explanation}</p>{result.is_repeat&&<small>同じ問題での復習です。</small>}<button className="secondary" disabled={busy} onClick={()=>void nextQuestion()}>次の確認・復習へ →</button></div>}</>}{progress?.correct_count===progress?.question_count&&<button className="secondary full" disabled={busy||complete} onClick={()=>void perform(async()=>{await api(`/units/${home.next_action.unit_version_id}/assess`,credential,{});await load(credential!);})}>{complete?'✓ この単元は修了済みです':'単元の修了を確認する'}</button>}</section></div>}
       {home&&screen==='progress'&&<section className="panel"><div className="section-heading"><h2>{selected?.title}</h2><span className="tag">教材 第{material?.revision}版</span></div><div className="progress-row"><div><strong>{material?.title}</strong><p>{complete?'修了済み':progress?.correct_count?'学習中':'これから学習'} · 確認問題 {progress?.correct_count} / {progress?.question_count} 問正解</p></div><span className={complete?'status done':'status'}>{complete?'✓ 修了':'学習中'}</span></div><div className="track"><div style={{width:`${percent}%`}}/></div><p className="muted">この入門単元は必須の{progress?.question_count}問すべてに正解すると修了できます。修了後の復習で間違えても修了記録は保持されます。</p></section>}
+      {home&&screen==='home'&&<section className="panel course-switch"><h2>コースを追加・切り替える</h2><p>同じ学習キーで複数のコースを学べます。切り替えても、各コースの回答・修了記録は残ります。</p><div className="course-grid">{courseOptions.map(course=>{const current=course.id===home.next_action.course_version_id;const enrolled=home.enrolled_course_version_ids.includes(course.id);return <article key={course.id}><h3>{course.title}</h3><p>教材 第{course.version}版 · {current?'現在のコース':enrolled?'登録済み':'未登録'}</p><button className="secondary" disabled={busy||current} onClick={()=>void switchCourse(course)}>{current?'このコースを学習中':enrolled?'このコースへ切り替える':'追加してこのコースを学ぶ'}</button></article>;})}</div></section>}
       {screen==='home'&&<section className="roadmap panel"><div className="section-heading"><h2>ここから広がる、学びの道筋</h2><span>プログラミング実践ルート</span></div><div className="milestones">{['制御構造','OOP','デスクトップ','LAN内通信','Webアプリ'].map((s,i)=><div key={s} className={i===0?'current':''}><span>{String(i+1).padStart(2,'0')}</span><strong>{s}</strong><small>{i===0?'入門単元を試せます':'教材は順次開発'}</small></div>)}</div></section>}
       <footer><span>◇ 氏名・メールアドレス・GitHub情報を送信しない設計</span><span>開発版：試験範囲の一部のみ。合格・全範囲の網羅は保証しません。</span></footer>
     </main></div>
@@ -145,9 +161,9 @@ function App() {
       const h=await api<Home>('/learning-home',c);
       const [m,p]=await Promise.all([api<Material>(`/units/${h.next_action.unit_version_id}/material`),api<Progress[]>('/progress',c)]);
       c.courseId=h.next_action.course_version_id;c.backup='restore_checked';await saveCredential(c);
-      setCredential(c);setHome(h);setMaterial(m);setProgress(p[0]);setQuestion(undefined);setChoice([]);setResult(undefined);setCode('');setRestoreInput('');setRotation(undefined);setRotationInput('');setBackup(false);setRestore(false);setScreen('home');setError('');notifyDeviceForgotten();
+      setCredential(c);setHome(h);setMaterial(m);setProgress(p.find(item=>item.unit_version_id===h.next_action.unit_version_id));setQuestion(undefined);setChoice([]);setResult(undefined);setCode('');setRestoreInput('');setRotation(undefined);setRotationInput('');setBackup(false);setRestore(false);setScreen('home');setError('');notifyDeviceForgotten();
     }}/>}
-    {deletion&&<div className="overlay"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="delete-title"><h2 id="delete-title">サーバーの学習記録を削除する</h2><p>現在の学習キーに結び付く学習記録・回答・進捗をサーバーから削除します。他の端末からもこの記録は使えなくなり、保存済みのコードでも復旧できません。</p><p>このPCの保存だけを解除したい場合は、キャンセルして「この端末の記憶を解除」を使ってください。</p><p>古いDBバックアップを復元した場合にも再削除するため、学習記録IDだけを含む削除台帳を別途保持します。</p><label><input type="checkbox" checked={deleteConfirmed} onChange={e=>setDeleteConfirmed(e.target.checked)}/>全端末で使っているこの学習記録が削除され、コードでも復旧できなくなることを確認しました</label>{error&&<p role="alert">{error}</p>}<button className="secondary" disabled={busy} onClick={()=>{setDeletion(undefined);setDeleteConfirmed(false);setError('');}}>キャンセル</button><button className="primary danger" disabled={busy||!deleteConfirmed} onClick={()=>void perform(async()=>{
+    {deletion&&<div className="overlay"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="delete-title"><h2 id="delete-title">サーバーの学習記録を削除する</h2><p>現在の学習キーに結び付く全コースの学習記録・回答・進捗をサーバーから削除します。他の端末からもこの記録は使えなくなり、保存済みのコードでも復旧できません。</p><p>このPCの保存だけを解除したい場合は、キャンセルして「この端末の記憶を解除」を使ってください。</p><p>古いDBバックアップを復元した場合にも再削除するため、学習記録IDだけを含む削除台帳を別途保持します。</p><label><input type="checkbox" checked={deleteConfirmed} onChange={e=>setDeleteConfirmed(e.target.checked)}/>全端末で使っている全コースの学習記録が削除され、コードでも復旧できなくなることを確認しました</label>{error&&<p role="alert">{error}</p>}<button className="secondary" disabled={busy} onClick={()=>{setDeletion(undefined);setDeleteConfirmed(false);setError('');}}>キャンセル</button><button className="primary danger" disabled={busy||!deleteConfirmed} onClick={()=>void perform(async()=>{
       try { await api('/records/me/delete',credential,{confirm:true,revision:deletion.revision},deletion.requestId); }
       catch(e) {
         if(e instanceof ApiError && e.code==='REVISION_CONFLICT')throw e;
@@ -187,6 +203,9 @@ if (temporary) {
   window.addEventListener('pageshow', event => { if (event.persisted) window.location.reload(); });
 }
 root.render(<App/>);
+
+
+
 
 
 

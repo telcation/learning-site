@@ -56,8 +56,10 @@ def create_app(database_url=None, pepper=None):
             'CREATE TABLE IF NOT EXISTS idempotency (credential_id TEXT NOT NULL, request_id TEXT NOT NULL, fingerprint TEXT NOT NULL, response TEXT NOT NULL, status INTEGER NOT NULL, expires_at INTEGER NOT NULL, PRIMARY KEY(credential_id,request_id))',
             'CREATE TABLE IF NOT EXISTS revoked_credentials (credential_id TEXT PRIMARY KEY, record_id TEXT NOT NULL REFERENCES records(id))',
             'CREATE TABLE IF NOT EXISTS app_metadata (name TEXT PRIMARY KEY, value TEXT NOT NULL)',
+            'CREATE TABLE IF NOT EXISTS enrollments (record_id TEXT NOT NULL REFERENCES records(id), course_version_id TEXT NOT NULL, completed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(record_id,course_version_id))',
         ]:
             c.exec_driver_sql(statement)
+        c.exec_driver_sql('INSERT OR IGNORE INTO enrollments (record_id,course_version_id,completed) SELECT id,course_id,completed FROM records')
     db_path = make_url(url).database
     if not db_path or db_path == ':memory:':
         raise RuntimeError('P1_FILE_DATABASE_REQUIRED')
@@ -194,6 +196,17 @@ def create_app(database_url=None, pepper=None):
     def unit_for(record):
         return next(u for u in UNITS.values() if u['course_version_id'] == record['course_id'])
 
+    def enrolled_unit(c, record, unit_id):
+        unit = UNITS.get(unit_id)
+        if not unit or not c.execute(text('SELECT 1 FROM enrollments WHERE record_id=:rid AND course_version_id=:cid'),
+                                     {'rid': record['id'], 'cid': unit['course_version_id']}).first():
+            raise Failure(404, 'NOT_FOUND')
+        return unit
+
+    def completed(c, record, course_id):
+        return bool(c.execute(text('SELECT completed FROM enrollments WHERE record_id=:rid AND course_version_id=:cid'),
+                              {'rid': record['id'], 'cid': course_id}).scalar_one())
+
     def latest(c, rid):
         rows = c.execute(text('SELECT question_id,correct FROM attempts WHERE record_id=:id ORDER BY sequence'), {'id': rid})
         return {row[0]: bool(row[1]) for row in rows}
@@ -208,6 +221,13 @@ def create_app(database_url=None, pepper=None):
     @app.get('/api/v1/catalog')
     def catalog():
         return COURSES
+
+    @app.get('/api/v1/courses/{course_id}/outline')
+    def outline(course_id: str):
+        if not any(course['id'] == course_id for course in COURSES):
+            raise Failure(404, 'NOT_FOUND')
+        return dict(course_version_id=course_id, unit_ids=[u['unit_version_id'] for u in UNITS.values()
+                    if u['course_version_id'] == course_id], prerequisites=[], milestones=[])
 
     @app.get('/api/v1/units/{unit_id}/material')
     def material(unit_id: str):
@@ -235,6 +255,7 @@ def create_app(database_url=None, pepper=None):
                 values = dict(id=str(uuid4()), cid=cid, digest=digest(pepper, cid, secret), course=course['id'],
                               month=today().replace(day=1).isoformat(), expires=(today()+timedelta(days=30)).isoformat())
                 c.execute(text('INSERT INTO records (id,credential_id,secret_hmac,course_id,last_active_month,empty_expires_on) VALUES (:id,:cid,:digest,:course,:month,:expires)'), values)
+                c.execute(text('INSERT INTO enrollments (record_id,course_version_id) VALUES (:id,:course)'), values)
                 return me(c.execute(text('SELECT * FROM records WHERE id=:id'), values).mappings().one())
             return idempotent(c, request, action, 201)
 
@@ -242,6 +263,46 @@ def create_app(database_url=None, pepper=None):
     def get_me(request: Request):
         with engine.connect() as c:
             return me(owner(c, request))
+
+    @app.post('/api/v1/enrollments/{course_id}')
+    def enroll(course_id: str, request: Request):
+        body(request, [])
+        course = next((course for course in COURSES if course['id'] == course_id and course['available']), None)
+        if not course:
+            raise Failure(404, 'NOT_FOUND')
+        with transaction() as c:
+            r = owner(c, request)
+            def action():
+                existing = set(c.execute(text('SELECT course_version_id FROM enrollments WHERE record_id=:rid'), {'rid': r['id']}).scalars())
+                # Keep an existing published version of this logical course. An
+                # enrollment request is not permission to replace its progress.
+                same_course = next((x for x in COURSES if x['id'] in existing and x['course_id'] == course['course_id']), None)
+                if same_course:
+                    return dict(resource_id=same_course['id'], revision=r['revision'])
+                c.execute(text('INSERT INTO enrollments (record_id,course_version_id) VALUES (:rid,:cid)'),
+                          {'rid': r['id'], 'cid': course['id']})
+                c.execute(text('UPDATE records SET revision=revision+1,last_active_month=:month,empty_expires_on=CASE WHEN evidence=0 THEN :expiry ELSE NULL END WHERE id=:rid'),
+                          {'rid': r['id'], 'month': today().replace(day=1).isoformat(), 'expiry': (today()+timedelta(days=30)).isoformat()})
+                return dict(resource_id=course['id'], revision=r['revision']+1)
+            return idempotent(c, request, action)
+
+    @app.put('/api/v1/learning-position')
+    def position(request: Request):
+        b = body(request, ['unit_version_id', 'revision'])
+        uuid(b['unit_version_id'])
+        if type(b['revision']) is not int or not 0 <= b['revision'] <= 2147483647:
+            raise Failure(400, 'INVALID_REQUEST')
+        with transaction() as c:
+            r = owner(c, request)
+            unit = enrolled_unit(c, r, b['unit_version_id'])
+            def action():
+                if r['revision'] != b['revision']:
+                    raise Failure(409, 'REVISION_CONFLICT')
+                c.execute(text('UPDATE records SET course_id=:cid,revision=revision+1,last_active_month=:month,empty_expires_on=CASE WHEN evidence=0 THEN :expiry ELSE NULL END WHERE id=:rid'),
+                          {'rid': r['id'], 'cid': unit['course_version_id'], 'month': today().replace(day=1).isoformat(),
+                           'expiry': (today()+timedelta(days=30)).isoformat()})
+                return dict(resource_id=unit['unit_version_id'], revision=r['revision']+1)
+            return idempotent(c, request, action)
 
     @app.post('/api/v1/credentials/rotate')
     def rotate(request: Request):
@@ -294,20 +355,23 @@ def create_app(database_url=None, pepper=None):
             answers = latest(c, r['id'])
             course = next(x for x in COURSES if x['id'] == r['course_id'])
             pending = sum(answers.get(q) is False for q in unit['question_ids'])
+            done = completed(c, r, r['course_id'])
+            enrolled = list(c.execute(text('SELECT course_version_id FROM enrollments WHERE record_id=:rid ORDER BY course_version_id'), {'rid': r['id']}).scalars())
             return dict(revision=r['revision'], study_route='practice' if course['language'] else 'fe',
-                        preferred_language=course['language'], enrolled_course_version_ids=[r['course_id']],
+                        preferred_language=course['language'], enrolled_course_version_ids=enrolled,
                         review_pending_count=pending, retention_kind='learning' if r['evidence'] else 'empty',
                         empty_expires_on=r['empty_expires_on'], next_action=dict(
-                            kind='course_complete' if r['completed'] else ('review' if pending else 'learn'),
+                            kind='course_complete' if done else ('review' if pending else 'learn'),
                             unit_version_id=unit['unit_version_id'], assignment_version_id=None, course_version_id=r['course_id'],
-                            reason='COURSE_FINISHED' if r['completed'] else ('REVIEW_NEEDED' if pending else 'RESUME')))
+                            reason='COURSE_FINISHED' if done else ('REVIEW_NEEDED' if pending else 'RESUME')))
 
     @app.get('/api/v1/questions/{question_id}')
     def question(question_id: str, request: Request):
         with engine.connect() as c:
             r = owner(c, request)
-            if question_id not in unit_for(r)['question_ids']:
+            if question_id not in QUESTIONS:
                 raise Failure(404, 'NOT_FOUND')
+            enrolled_unit(c, r, QUESTIONS[question_id]['unit_version_id'])
             return public_question(question_id)
 
     @app.post('/api/v1/units/{unit_id}/review-next')
@@ -315,9 +379,7 @@ def create_app(database_url=None, pepper=None):
         body(request, [])
         with transaction() as c:
             r = owner(c, request)
-            unit = unit_for(r)
-            if unit_id != unit['unit_version_id']:
-                raise Failure(404, 'NOT_FOUND')
+            unit = enrolled_unit(c, r, unit_id)
             def action():
                 answers = latest(c, r['id'])
                 # This pilot has one question per mandatory objective; never switch objectives.
@@ -335,8 +397,9 @@ def create_app(database_url=None, pepper=None):
             uuid(choice)
         with transaction() as c:
             r = owner(c, request)
-            if question_id not in unit_for(r)['question_ids']:
+            if question_id not in QUESTIONS:
                 raise Failure(404, 'NOT_FOUND')
+            enrolled_unit(c, r, QUESTIONS[question_id]['unit_version_id'])
             q = QUESTIONS[question_id]
             allowed = {x['id'] for x in q['choices']}
             if (len(set(choices)) != len(choices) or not set(choices) <= allowed
@@ -359,14 +422,14 @@ def create_app(database_url=None, pepper=None):
         body(request, [])
         with transaction() as c:
             r = owner(c, request)
-            unit = unit_for(r)
-            if unit_id != unit['unit_version_id']:
-                raise Failure(404, 'NOT_FOUND')
+            unit = enrolled_unit(c, r, unit_id)
             def action():
                 answers = latest(c, r['id'])
                 if not all(answers.get(q) for q in unit['question_ids']):
                     raise Failure(409, 'REQUIREMENTS_UNMET')
-                if not r['completed']:
+                if not completed(c, r, unit['course_version_id']):
+                    c.execute(text('UPDATE enrollments SET completed=1 WHERE record_id=:rid AND course_version_id=:cid'),
+                              {'rid': r['id'], 'cid': unit['course_version_id']})
                     c.execute(text('UPDATE records SET completed=1,revision=revision+1,last_active_month=:month WHERE id=:id'),
                               {'id': r['id'], 'month': today().replace(day=1).isoformat()})
                 revision = c.execute(text('SELECT revision FROM records WHERE id=:id'), {'id': r['id']}).scalar_one()
@@ -377,10 +440,15 @@ def create_app(database_url=None, pepper=None):
     def progress(request: Request):
         with engine.connect() as c:
             r = owner(c, request)
-            u, answers = unit_for(r), latest(c, r['id'])
-            n = sum(bool(answers.get(q)) for q in u['question_ids'])
-            return [dict(unit_version_id=u['unit_version_id'], state='completed' if r['completed'] else ('requirements_unmet' if answers else 'not_started'),
-                         correct_count=n, question_count=len(u['question_ids']), completion_basis='self_confirmed' if r['completed'] else 'none',
-                         objectives=[], review_pending_count=sum(answers.get(q) is False for q in u['question_ids']))]
+            answers = latest(c, r['id'])
+            result = []
+            for cid, done in c.execute(text('SELECT course_version_id,completed FROM enrollments WHERE record_id=:rid ORDER BY course_version_id'), {'rid': r['id']}):
+                u = next(u for u in UNITS.values() if u['course_version_id'] == cid)
+                n = sum(bool(answers.get(q)) for q in u['question_ids'])
+                started = any(q in answers for q in u['question_ids'])
+                result.append(dict(unit_version_id=u['unit_version_id'], state='completed' if done else ('requirements_unmet' if started else 'not_started'),
+                         correct_count=n, question_count=len(u['question_ids']), completion_basis='self_confirmed' if done else 'none',
+                         objectives=[], review_pending_count=sum(answers.get(q) is False for q in u['question_ids'])))
+            return result
 
     return app

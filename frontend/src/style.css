@@ -7,3 +7,4 @@
 .danger{color:#92342b;border-color:#92342b}.primary.danger{color:#fff;background:#92342b}
 .recovery-field{display:block;margin:18px 0}.recovery-field input{display:block;width:100%;margin-top:8px;padding:10px;border:1px solid #becbb6;border-radius:7px}
 .answer-order{padding-left:24px}.answer-order li{padding:12px 0;line-height:1.8}.answer-order li>div{display:flex;gap:8px;margin-top:8px}.answer-order .secondary{padding:7px 12px}.quiz legend{font-size:12px;line-height:1.8;margin-bottom:12px}
+.course-switch{margin:24px 0}.course-switch article{padding:16px;border:1px solid #dfe5d8;border-radius:8px}.course-switch h3{font-size:15px}.course-switch article p{font-size:12px}
