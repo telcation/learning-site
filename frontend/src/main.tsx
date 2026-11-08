@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { bearer, createCredential, exportCode, importCode, readCredential, saveCredential, forgetCredential } from './credential';
 import type { Credential } from './credential';
 import './style.css';
-import { watchDeviceForgotten } from './device-sync';
+import { notifyDeviceForgotten, watchDeviceForgotten } from './device-sync';
 
 type Course = {id:string;title:string;language:'java'|'python'|null;version:number};
 type Home = {revision:number;review_pending_count:number;enrolled_course_version_ids:string[];retention_kind:string;empty_expires_on:string|null;next_action:{kind:string;unit_version_id:string;course_version_id:string}};
@@ -12,22 +12,25 @@ type Question = {question_version_id:string;prompt:string;choices:{id:string;tex
 type Progress = {state:string;correct_count:number;question_count:number};
 type Result = {correct:boolean;explanation:string;is_repeat:boolean};
 class ApiError extends Error { constructor(public code:string, public status:number) { super(code); } }
-async function api<T>(path:string, credential?:Credential, body?:unknown):Promise<T> {
+async function api<T>(path:string, credential?:Credential, body?:unknown, requestId?:string):Promise<T> {
   const headers:Record<string,string> = {};
   if (credential) headers.Authorization = bearer(credential);
-  if (body !== undefined) { headers['Content-Type']='application/json'; headers['Idempotency-Key']=path === '/records' && credential ? credential.bootstrapKey : crypto.randomUUID(); }
+  if (body !== undefined) { headers['Content-Type']='application/json'; headers['Idempotency-Key']=requestId ?? (path === '/records' && credential ? credential.bootstrapKey : crypto.randomUUID()); }
   const response = await fetch('/api/v1'+path, {method: body === undefined ? 'GET' : 'POST',headers,body:body === undefined ? undefined : JSON.stringify(body),cache:'no-store',referrerPolicy:'no-referrer'});
   const value = await response.json();
   if (!response.ok) throw new ApiError(value.code || 'UNAVAILABLE', response.status);
   return value as T;
 }
-const errorText = (e:unknown) => e instanceof ApiError && [401,410].includes(e.status) ? '学習キーを確認できません。新しい記録は自動作成していません。保存済みの学習コードで復旧してください。' : e instanceof ApiError && e.code === 'REQUIREMENTS_UNMET' ? 'まだ未達成の確認問題があります。すべての問題に正解してから修了を確認してください。' : e instanceof Error && e.message === 'STORAGE_UNAVAILABLE' ? 'このブラウザーに学習キーを保存できません。保存を許可したブラウザーをご利用ください。' : '処理が完了しませんでした。通信状態を確認して、もう一度お試しください。';
+const errorText = (e:unknown) => e instanceof ApiError && [401,410].includes(e.status) ? '学習キーを確認できません。新しい記録は自動作成していません。保存済みの学習コードで復旧してください。' : e instanceof ApiError && e.code === 'REVISION_CONFLICT' ? '別の操作で記録が更新されました。キー更新画面を閉じて、もう一度やり直してください。' : e instanceof Error && e.message === 'INVALID_CODE' ? '学習コードの文字・長さ・検査値を確認してください。' : e instanceof ApiError && e.code === 'REQUIREMENTS_UNMET' ? 'まだ未達成の確認問題があります。すべての問題に正解してから修了を確認してください。' : e instanceof Error && e.message === 'STORAGE_UNAVAILABLE' ? 'このブラウザーに学習キーを保存できません。保存を許可したブラウザーをご利用ください。' : '処理が完了しませんでした。通信状態を確認して、もう一度お試しください。';
 
 function App() {
   // Reload discards displayed secrets and in-flight component state together.
   useEffect(() => watchDeviceForgotten(() => window.location.reload()), []);
   const [catalog,setCatalog]=useState<Course[]>([]), [credential,setCredential]=useState<Credential>(), [home,setHome]=useState<Home>(), [material,setMaterial]=useState<Material>(), [progress,setProgress]=useState<Progress>();
   const [screen,setScreen]=useState<'home'|'learn'|'progress'>('home'), [question,setQuestion]=useState<Question>(), [choice,setChoice]=useState(''), [result,setResult]=useState<Result>(), [busy,setBusy]=useState(true), [error,setError]=useState('');
+  const [rotation,setRotation]=useState<{candidate:Credential; code:string; revision:number; recordId:string}>();
+  const [rotationInput,setRotationInput]=useState('');
+  const [rotationSaved,setRotationSaved]=useState(false);
   const [forget,setForget]=useState(false);
   useEffect(() => {
     if (!credential) return;
@@ -85,9 +88,32 @@ function App() {
       {screen==='home'&&<section className="roadmap panel"><div className="section-heading"><h2>ここから広がる、学びの道筋</h2><span>プログラミング実践ルート</span></div><div className="milestones">{['制御構造','OOP','デスクトップ','LAN内通信','Webアプリ'].map((s,i)=><div key={s} className={i===0?'current':''}><span>{String(i+1).padStart(2,'0')}</span><strong>{s}</strong><small>{i===0?'入門単元を試せます':'教材は順次開発'}</small></div>)}</div></section>}
       <footer><span>◇ 氏名・メールアドレス・GitHub情報を送信しない設計</span><span>開発版：試験範囲の一部のみ。合格・全範囲の網羅は保証しません。</span></footer>
     </main></div>
+    {rotation&&<div className="overlay"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="rotation-title"><h2 id="rotation-title">学習キーを更新する</h2><p>更新すると、他の端末を含むすべての旧キーと旧バックアップが使えなくなります。学習記録は維持されます。次の3つの手順で、新しいコードを保管・確認してから更新してください。</p>
+<ol>
+  <li><label htmlFor="new-learning-code">新しい学習コードをコピーして保存する</label><p>下のコード全体（LS1-から始まる文字列）をコピーし、メモ帳などに貼り付けてファイルとして保存してください。紙に正確に書き写して保管してもかまいません。コードを知る人は学習記録へアクセスできるため、公開・共有先には保存しないでください。</p><textarea id="new-learning-code" readOnly value={rotation.code} autoComplete="off" spellCheck={false}/><p>この画面を閉じるとコードは再表示できません。コードの表示やコピーだけでは保存は完了していません。</p></li>
+  <li><label><input type="checkbox" checked={rotationSaved} onChange={e=>setRotationSaved(e.target.checked)}/>保存したファイルを開くなどして、コードが手元に残っていることを確認しました</label></li>
+  <li><label htmlFor="saved-learning-code">保存先からコードをコピーして、下の確認欄に貼り付ける</label><p>手順1で保存したファイルやメモを開き、そこからコード全体をコピーして貼り付けてください。紙で保管した場合は、紙を見ながら入力してください。上の表示欄から直接コピーするのではなく、保存先から取り出せることを確かめます。</p><textarea id="saved-learning-code" value={rotationInput} autoComplete="off" spellCheck={false} placeholder="保存したコード全体（LS1-…）を貼り付ける" onChange={e=>setRotationInput(e.target.value)}/></li>
+</ol><p>確認欄のコードが一致したら、下の「新しいキーへ更新し旧キーを失効する」を押してください。それまでは現在のキーが有効です。</p>{error&&<p role="alert">{error}</p>}<button className="secondary" disabled={busy} onClick={()=>{setRotation(undefined);setRotationInput('');setRotationSaved(false);setError('');}}>閉じる</button><button className="primary" disabled={busy||!rotationSaved||!rotationInput} onClick={()=>void perform(async()=>{
+      const candidate=await importCode(rotationInput);
+      if(candidate.id!==rotation.candidate.id||candidate.secret!==rotation.candidate.secret){setError('保存した新しいコードが一致しません。');return;}
+      try {
+        await api('/credentials/rotate',credential,{replacement_credential_id:candidate.id,secret_candidate:candidate.secret,revision:rotation.revision},rotation.candidate.bootstrapKey);
+      } catch(e) {
+        // A lost success response must be resolved with the new key, never old-key cache replay.
+        try {const record=await api<{record_id:string}>('/records/me',candidate);if(record.record_id!==rotation.recordId)throw e;} catch {throw e;}
+      }
+      const record=await api<{record_id:string}>('/records/me',candidate);
+      if(record.record_id!==rotation.recordId)throw new Error('RECORD_MISMATCH');
+      candidate.courseId=credential?.courseId;candidate.backup='restore_checked';
+      await saveCredential(candidate);notifyDeviceForgotten();setCredential(candidate);setQuestion(undefined);setChoice('');setResult(undefined);setCode('');setRotation(undefined);setRotationInput('');setRotationSaved(false);setBackup(false);setRestoreInput('');await load(candidate);
+    })}>新しいキーへ更新し旧キーを失効する</button></section></div>}
     {forget&&<div className="overlay"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="forget-title"><h2 id="forget-title">この端末の記憶を解除しますか</h2><p>このブラウザーに保存した学習キーとバックアップ操作状態を消します。サーバーの学習記録と、他の端末・保存済みコードの有効性は変わりません。</p><p>再開には保存済みの学習コードが必要です。コードがない場合、本人確認による復旧はできません。</p>{error&&<p role="alert">{error}</p>}<button className="secondary" disabled={busy} onClick={()=>{setForget(false);setError('');}}>キャンセル</button><button className="primary" disabled={busy} onClick={()=>void perform(async()=>{await forgetCredential();setCredential(undefined);setHome(undefined);setMaterial(undefined);setProgress(undefined);setQuestion(undefined);setChoice('');setResult(undefined);setCode('');setRestoreInput('');setRestore(false);setBackup(false);setScreen('home');setForget(false);})}>この端末の記憶を解除する</button></section></div>}
-    {(backup||restore)&&<div className="overlay"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><button className="close" aria-label="閉じる" onClick={()=>{setBackup(false);setRestore(false);setCode('');setRestoreInput('');}}>×</button><h2 id="modal-title">{restore?'学習記録を復旧する':'学習キーを手元に保管する'}</h2>{restore?<><p>学習コードはこのブラウザーで検証します。現在のキーは、復旧先を確認した後で置き換えます。</p><label>学習コード<textarea autoComplete="off" spellCheck={false} value={restoreInput} onChange={e=>setRestoreInput(e.target.value)} placeholder="LS1-…"/></label><button className="primary" disabled={busy||!restoreInput} onClick={()=>void perform(async()=>{let c;try{c=await importCode(restoreInput);}catch{setError('学習コードを確認してください。文字・長さ・検査値が一致しません。');return;}const h=await api<Home>('/learning-home',c);c.courseId=h.next_action.course_version_id;c.backup='restore_checked';await saveCredential(c);setCredential(c);await load(c);setRestore(false);setBackup(false);setRestoreInput('');setScreen('home');})}>復旧先を確認してこの端末に保存</button></>:<><p>保存は任意です。ブラウザーのデータを失うと、学習コードがない記録には戻れません。コードを知る人は学習記録にアクセスできます。共有フォルダーやGitHubには置かないでください。</p><dl><dt>この端末の保存状態</dt><dd>{storage}</dd><dt>学習していない記録の期限</dt><dd>{home?.retention_kind==='empty'?home.empty_expires_on:'学習開始後は最終活動月から24か月（正式運用時）'}</dd></dl>{credential?<><button className="secondary" disabled={busy} onClick={()=>void perform(async()=>{setCode(await exportCode(credential));})}>学習コードを30秒間表示</button>{code&&<div><pre className="secret">{code}</pre><button className="primary" onClick={()=>void perform(async()=>{const blob=new Blob([code+'\n'],{type:'text/plain;charset=utf-8'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='learning-code.txt';a.click();window.setTimeout(()=>URL.revokeObjectURL(url),1000);const c={...credential,backup:'export_action_taken' as const};await saveCredential(c);setCredential(c);})}>コードをファイルに書き出す</button><p className="muted">書き出し操作は保存成功の証明ではありません。実際にファイルがあるかご自身で確認してください。</p></div>}</>:<p>コースを始めると学習キーが作成されます。</p>}<button className="text-button" disabled={busy} onClick={()=>setRestore(true)}>既存の学習コードから復旧する →</button>{credential&&<button className="secondary full" disabled={busy} onClick={()=>{setCode('');setBackup(false);setForget(true);}}>この端末の記憶を解除</button>}</>}</section></div>}
+    {(backup||restore)&&<div className="overlay"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><button className="close" aria-label="閉じる" onClick={()=>{setBackup(false);setRestore(false);setCode('');setRestoreInput('');}}>×</button><h2 id="modal-title">{restore?'学習記録を復旧する':'学習キーを手元に保管する'}</h2>{restore?<><p>学習コードはこのブラウザーで検証します。現在のキーは、復旧先を確認した後で置き換えます。</p><label>学習コード<textarea autoComplete="off" spellCheck={false} value={restoreInput} onChange={e=>setRestoreInput(e.target.value)} placeholder="LS1-…"/></label><button className="primary" disabled={busy||!restoreInput} onClick={()=>void perform(async()=>{let c;try{c=await importCode(restoreInput);}catch{setError('学習コードを確認してください。文字・長さ・検査値が一致しません。');return;}const h=await api<Home>('/learning-home',c);c.courseId=h.next_action.course_version_id;c.backup='restore_checked';await saveCredential(c);setCredential(c);await load(c);setRestore(false);setBackup(false);setRestoreInput('');setScreen('home');})}>復旧先を確認してこの端末に保存</button></>:<><p>保存は任意です。ブラウザーのデータを失うと、学習コードがない記録には戻れません。コードを知る人は学習記録にアクセスできます。共有フォルダーやGitHubには置かないでください。</p><dl><dt>この端末の保存状態</dt><dd>{storage}</dd><dt>学習していない記録の期限</dt><dd>{home?.retention_kind==='empty'?home.empty_expires_on:'学習開始後は最終活動月から24か月（正式運用時）'}</dd></dl>{credential?<><button className="secondary" disabled={busy} onClick={()=>void perform(async()=>{setCode(await exportCode(credential));})}>学習コードを30秒間表示</button>{code&&<div><pre className="secret">{code}</pre><button className="primary" onClick={()=>void perform(async()=>{const blob=new Blob([code+'\n'],{type:'text/plain;charset=utf-8'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='learning-code.txt';a.click();window.setTimeout(()=>URL.revokeObjectURL(url),1000);const c={...credential,backup:'export_action_taken' as const};await saveCredential(c);setCredential(c);})}>コードをファイルに書き出す</button><p className="muted">書き出し操作は保存成功の証明ではありません。実際にファイルがあるかご自身で確認してください。</p></div>}</>:<p>コースを始めると学習キーが作成されます。</p>}<button className="text-button" disabled={busy} onClick={()=>setRestore(true)}>既存の学習コードから復旧する →</button>{credential&&<button className="secondary full" disabled={busy} onClick={()=>void perform(async()=>{const record=await api<{record_id:string;revision:number}>('/records/me',credential);const candidate=await createCredential();setRotation({candidate,code:await exportCode(candidate),revision:record.revision,recordId:record.record_id});setRotationInput('');setRotationSaved(false);setCode('');setBackup(false);})}>学習キーを更新する</button>}{credential&&<button className="secondary full" disabled={busy} onClick={()=>{setCode('');setBackup(false);setForget(true);}}>この端末の記憶を解除</button>}</>}</section></div>}
   </div>;
 }
 createRoot(document.getElementById('root')!).render(<App/>);
+
+
+
+
 

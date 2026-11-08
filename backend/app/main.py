@@ -51,6 +51,7 @@ def create_app(database_url=None, pepper=None):
             'CREATE TABLE IF NOT EXISTS records (id TEXT PRIMARY KEY, credential_id TEXT UNIQUE NOT NULL, secret_hmac TEXT NOT NULL, course_id TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0, last_active_month TEXT NOT NULL, empty_expires_on TEXT, evidence INTEGER NOT NULL DEFAULT 0, completed INTEGER NOT NULL DEFAULT 0, CHECK ((evidence=0 AND empty_expires_on IS NOT NULL) OR (evidence=1 AND empty_expires_on IS NULL)))',
             'CREATE TABLE IF NOT EXISTS attempts (id TEXT PRIMARY KEY, record_id TEXT NOT NULL REFERENCES records(id), question_id TEXT NOT NULL, sequence INTEGER NOT NULL, choice_ids TEXT NOT NULL, correct INTEGER NOT NULL, UNIQUE(record_id, sequence))',
             'CREATE TABLE IF NOT EXISTS idempotency (credential_id TEXT NOT NULL, request_id TEXT NOT NULL, fingerprint TEXT NOT NULL, response TEXT NOT NULL, status INTEGER NOT NULL, expires_at INTEGER NOT NULL, PRIMARY KEY(credential_id,request_id))',
+            'CREATE TABLE IF NOT EXISTS revoked_credentials (credential_id TEXT PRIMARY KEY, record_id TEXT NOT NULL REFERENCES records(id))',
         ]:
             c.exec_driver_sql(statement)
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
@@ -199,6 +200,8 @@ def create_app(database_url=None, pepper=None):
             raise Failure(400, 'INVALID_REQUEST')
         cid, secret = token(request)
         with transaction() as c:
+            if c.execute(text('SELECT 1 FROM revoked_credentials WHERE credential_id=:cid'), {'cid': cid}).first():
+                raise Failure(401, 'UNAUTHORIZED')
             def action():
                 if c.execute(text('SELECT 1 FROM records WHERE credential_id=:cid'), {'cid': cid}).first():
                     raise Failure(409, 'CREDENTIAL_EXISTS')
@@ -212,6 +215,33 @@ def create_app(database_url=None, pepper=None):
     def get_me(request: Request):
         with engine.connect() as c:
             return me(owner(c, request))
+
+    @app.post('/api/v1/credentials/rotate')
+    def rotate(request: Request):
+        b = body(request, ['replacement_credential_id', 'secret_candidate', 'revision'])
+        if type(b['revision']) is not int or not 0 <= b['revision'] <= 2147483647:
+            raise Failure(400, 'INVALID_REQUEST')
+        if not isinstance(b['replacement_credential_id'], str) or not isinstance(b['secret_candidate'], str):
+            raise Failure(400, 'INVALID_REQUEST')
+        try:
+            cid, secret = parse_token('Bearer ' + b['replacement_credential_id'] + '.' + b['secret_candidate'])
+        except ValueError:
+            raise Failure(400, 'INVALID_REQUEST')
+        with transaction() as c:
+            r = owner(c, request)  # Authorize before any cached response, including retries.
+            def action():
+                if r['revision'] != b['revision']:
+                    raise Failure(409, 'REVISION_CONFLICT')
+                if (c.execute(text('SELECT 1 FROM records WHERE credential_id=:cid'), {'cid': cid}).first()
+                        or c.execute(text('SELECT 1 FROM revoked_credentials WHERE credential_id=:cid'), {'cid': cid}).first()):
+                    raise Failure(409, 'REVISION_CONFLICT')
+                c.execute(text('INSERT INTO revoked_credentials VALUES (:cid,:rid)'), {'cid': r['credential_id'], 'rid': r['id']})
+                c.execute(text('UPDATE records SET credential_id=:cid,secret_hmac=:digest,revision=revision+1 WHERE id=:rid'),
+                          {'cid': cid, 'digest': digest(pepper, cid, secret), 'rid': r['id']})
+                # Remove old response caches so old bootstrap requests cannot recover record data.
+                c.execute(text('DELETE FROM idempotency WHERE credential_id=:cid'), {'cid': r['credential_id']})
+                return dict(resource_id=r['id'], revision=r['revision']+1)
+            return idempotent(c, request, action)
 
     @app.get('/api/v1/learning-home')
     def home(request: Request):

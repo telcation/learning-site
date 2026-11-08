@@ -141,3 +141,100 @@ def test_no_private_values_in_server_exception(env, monkeypatch):
     monkeypatch.setattr(module,'COURSES',[{'broken':'secret-value'}])
     response=send(client,'/records',key(),dict(course_version_id='x',study_route='fe',preferred_language=None))
     assert response.status_code==503 and 'secret-value' not in response.text
+
+def rotation_payload(auth, revision):
+    cid, secret = auth[7:].split('.')
+    return dict(replacement_credential_id=cid, secret_candidate=secret, revision=revision)
+
+
+def test_rotate_preserves_record_and_revokes_old_key(env):
+    client, engine = env
+    old, unit = start(client)
+    qid = unit['question_ids'][0]
+    send(client, f'/questions/{qid}/attempts', old, {'choice_ids': QUESTIONS[qid]['correct_ids']})
+    before = get(client, '/records/me', old).json()
+    progress = get(client, '/progress', old).json()
+    new = key()
+    request_id = str(uuid4())
+    payload = rotation_payload(new, before['revision'])
+    response = send(client, '/credentials/rotate', old, payload, request_id)
+    assert response.status_code == 200, response.text
+    assert response.json() == dict(resource_id=before['record_id'], revision=before['revision']+1)
+    assert get(client, '/records/me', new).json()['record_id'] == before['record_id']
+    assert get(client, '/progress', new).json() == progress
+    assert get(client, '/records/me', old).status_code == 401
+    assert send(client, '/credentials/rotate', old, payload, request_id).status_code == 401
+    assert send(client, f'/questions/{qid}/attempts', old, {'choice_ids': QUESTIONS[qid]['correct_ids']}).status_code == 401
+    course = COURSES[0]
+    assert send(client, '/records', old, dict(course_version_id=course['id'], study_route='practice', preferred_language=course['language'])).status_code == 401
+    with engine.connect() as c:
+        rows = str(c.execute(text('SELECT * FROM records')).all()) + str(c.execute(text('SELECT * FROM idempotency')).all())
+        assert new.split('.')[1] not in rows and old.split('.')[1] not in rows
+
+
+def test_rotation_conflicts_and_invalid_candidate_do_not_change_owner(env):
+    client, _ = env
+    old, _ = start(client)
+    record = get(client, '/records/me', old).json()
+    candidate = key()
+    payload = rotation_payload(candidate, record['revision']+1)
+    assert send(client, '/credentials/rotate', old, payload).json()['code'] == 'REVISION_CONFLICT'
+    payload['revision'] = True
+    assert send(client, '/credentials/rotate', old, payload).status_code == 400
+    payload = rotation_payload(candidate, record['revision'])
+    payload['replacement_credential_id'] = str(uuid4())
+    assert send(client, '/credentials/rotate', old, payload).status_code == 400
+    payload = rotation_payload(old, record['revision'])
+    assert send(client, '/credentials/rotate', old, payload).status_code == 409
+    other, _ = start(client)
+    assert send(client, '/credentials/rotate', old, rotation_payload(other, record['revision'])).status_code == 409
+    assert get(client, '/records/me', old).json() == record
+    assert get(client, '/records/me', candidate).status_code == 401
+
+
+def test_concurrent_rotation_has_one_winner(env):
+    client, _ = env
+    old, _ = start(client)
+    record = get(client, '/records/me', old).json()
+    candidates = [key(), key()]
+    def rotate(candidate):
+        return send(client, '/credentials/rotate', old, rotation_payload(candidate, record['revision'])).status_code
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        statuses = list(pool.map(rotate, candidates))
+    assert sorted(statuses) == [200, 401]
+    assert sorted(get(client, '/records/me', c).status_code for c in candidates) == [200, 401]
+
+def test_rotation_rollback_keeps_old_key(env, monkeypatch):
+    client, engine = env
+    old, _ = start(client)
+    record = get(client, '/records/me', old).json()
+    new = key()
+    import app.main as module
+    original_digest = module.digest
+    def fail_digest(*args):
+        raise RuntimeError('private-failure-details')
+    monkeypatch.setattr(module, 'digest', fail_digest)
+    # Authentication also uses digest, so fail only when deriving the new key's verifier.
+    def fail_new(pepper, cid, secret):
+        if cid == new[7:].split('.')[0]:
+            return fail_digest()
+        return original_digest(pepper, cid, secret)
+    monkeypatch.setattr(module, 'digest', fail_new)
+    result = send(client, '/credentials/rotate', old, rotation_payload(new, record['revision']))
+    assert result.status_code == 503 and 'private-failure-details' not in result.text
+    assert get(client, '/records/me', old).json() == record
+    assert get(client, '/records/me', new).status_code == 401
+    with engine.connect() as c:
+        assert c.execute(text('SELECT count(*) FROM revoked_credentials')).scalar_one() == 0
+
+
+def test_rotation_does_not_extend_empty_retention(env):
+    client, _ = env
+    old, _ = start(client)
+    before = get(client, '/records/me', old).json()
+    new = key()
+    assert send(client, '/credentials/rotate', old, rotation_payload(new, before['revision'])).status_code == 200
+    after = get(client, '/records/me', new).json()
+    assert after['empty_expires_on'] == before['empty_expires_on']
+    assert after['last_active_month'] == before['last_active_month']
+    assert after['retention_kind'] == 'empty'
