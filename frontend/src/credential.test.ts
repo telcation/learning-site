@@ -62,3 +62,65 @@ test('forget notification reaches other tabs without credential data', async () 
     });
   } finally { clearTimeout(timer!); stop(); }
 });
+
+test('temporary session expires at 60 minutes, including after sleep', async () => {
+  const { TemporarySession, IDLE_LIMIT_MS } = await import('./temporary-session.ts');
+  let time = 0, ended = 0;
+  const session = new TemporarySession(() => ended++, () => time);
+  time = IDLE_LIMIT_MS - 1;
+  assert.equal(session.check(), true);
+  time = IDLE_LIMIT_MS;
+  assert.equal(session.check(), false);
+  session.touch(); session.end();
+  assert.equal(ended, 1);
+  assert.equal(session.check(), false);
+});
+
+test('temporary activity renews deadline only before expiry', async () => {
+  const { TemporarySession, IDLE_LIMIT_MS } = await import('./temporary-session.ts');
+  let time = 0, ended = 0;
+  const session = new TemporarySession(() => ended++, () => time);
+  time = 40 * 60 * 1000; session.touch();
+  time = 80 * 60 * 1000;
+  assert.equal(session.check(), true);
+  time = 40 * 60 * 1000 + IDLE_LIMIT_MS;
+  session.touch();
+  assert.equal(ended, 1);
+  assert.equal(session.check(), false);
+});
+
+test('temporary explicit end rejects further use immediately', async () => {
+  const { TemporarySession } = await import('./temporary-session.ts');
+  let ended = 0;
+  const session = new TemporarySession(() => ended++);
+  session.end();
+  assert.equal(session.check(), false);
+  session.touch(); session.end();
+  assert.equal(ended, 1);
+});
+
+test('temporary end channel is isolated from personal saved-key notifications', async () => {
+  const { watchDeviceForgotten, notifyDeviceForgotten } = await import('./device-sync.ts');
+  let personal = 0;
+  const stopPersonal = watchDeviceForgotten(() => personal++);
+  let stopTemporary = () => {};
+  let timer: ReturnType<typeof setTimeout>;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('notification timeout')), 2000);
+      stopTemporary = watchDeviceForgotten(resolve, 'learning-temporary-end-v1');
+      notifyDeviceForgotten('learning-temporary-end-v1');
+    });
+    assert.equal(personal, 0);
+  } finally { clearTimeout(timer!); stopPersonal(); stopTemporary(); }
+});
+
+test('blocked cross-tab messaging does not prevent local end', async () => {
+  const { watchDeviceForgotten, notifyDeviceForgotten } = await import('./device-sync.ts');
+  const original = globalThis.BroadcastChannel;
+  try {
+    (globalThis as any).BroadcastChannel = class { constructor() { throw new Error('blocked'); } };
+    assert.doesNotThrow(() => notifyDeviceForgotten('learning-temporary-end-v1'));
+    assert.doesNotThrow(() => watchDeviceForgotten(() => {}, 'learning-temporary-end-v1')());
+  } finally { globalThis.BroadcastChannel = original; }
+});

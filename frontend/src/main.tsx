@@ -1,9 +1,33 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { bearer, createCredential, exportCode, importCode, readCredential, saveCredential, forgetCredential } from './credential';
+import { bearer, createCredential, exportCode, importCode, readCredential, saveCredential as savePersonalCredential, forgetCredential } from './credential';
 import type { Credential } from './credential';
 import './style.css';
+import { TemporarySession } from './temporary-session';
 import { notifyDeviceForgotten, watchDeviceForgotten } from './device-sync';
+
+// The fragment contains a mode flag only, never a key. It survives reloads and
+// new tabs opened from this URL without persisting the temporary credential.
+const temporary = window.location.hash === '#temporary';
+const requests = new AbortController();
+let ended = false;
+function endTemporary() {
+  if (ended) return;
+  ended = true;
+  requests.abort();
+  root.unmount();
+  window.location.reload();
+}
+const temporarySession = temporary ? new TemporarySession(endTemporary) : undefined;
+function endAllTemporaryTabs() {
+  notifyDeviceForgotten('learning-temporary-end-v1');
+  temporarySession?.end();
+}
+async function saveCredential(c: Credential) {
+  if (ended || temporarySession && !temporarySession.check()) throw new Error('SESSION_ENDED');
+  if (!temporary) await savePersonalCredential(c);
+}
+
 
 type Course = {id:string;title:string;language:'java'|'python'|null;version:number};
 type Home = {revision:number;review_pending_count:number;enrolled_course_version_ids:string[];retention_kind:string;empty_expires_on:string|null;next_action:{kind:string;unit_version_id:string;course_version_id:string}};
@@ -13,11 +37,13 @@ type Progress = {state:string;correct_count:number;question_count:number};
 type Result = {correct:boolean;explanation:string;is_repeat:boolean};
 class ApiError extends Error { constructor(public code:string, public status:number) { super(code); } }
 async function api<T>(path:string, credential?:Credential, body?:unknown, requestId?:string):Promise<T> {
+  if (ended || temporarySession && !temporarySession.check()) throw new Error('SESSION_ENDED');
   const headers:Record<string,string> = {};
   if (credential) headers.Authorization = bearer(credential);
   if (body !== undefined) { headers['Content-Type']='application/json'; headers['Idempotency-Key']=requestId ?? (path === '/records' && credential ? credential.bootstrapKey : crypto.randomUUID()); }
-  const response = await fetch('/api/v1'+path, {method: body === undefined ? 'GET' : 'POST',headers,body:body === undefined ? undefined : JSON.stringify(body),cache:'no-store',referrerPolicy:'no-referrer'});
+  const response = await fetch('/api/v1'+path, {method: body === undefined ? 'GET' : 'POST',headers,body:body === undefined ? undefined : JSON.stringify(body),cache:'no-store',referrerPolicy:'no-referrer',signal:requests.signal});
   const value = await response.json();
+  if (ended || temporarySession && !temporarySession.check()) throw new Error('SESSION_ENDED');
   if (!response.ok) throw new ApiError(value.code || 'UNAVAILABLE', response.status);
   return value as T;
 }
@@ -25,7 +51,23 @@ const errorText = (e:unknown) => e instanceof ApiError && [401,410].includes(e.s
 
 function App() {
   // Reload discards displayed secrets and in-flight component state together.
-  useEffect(() => watchDeviceForgotten(() => window.location.reload()), []);
+  useEffect(() => temporary ? watchDeviceForgotten(() => temporarySession?.end(), 'learning-temporary-end-v1') : watchDeviceForgotten(() => window.location.reload()), []);
+  useEffect(() => {
+    if (!temporarySession) return;
+    const touch = () => temporarySession.touch();
+    const check = () => { temporarySession.check(); };
+    const events = ['pointerdown','keydown','input','scroll'] as const;
+    for (const event of events) window.addEventListener(event, touch, true);
+    window.addEventListener('focus', check);
+    document.addEventListener('visibilitychange', check);
+    const timer = window.setInterval(check, 1000);
+    return () => {
+      for (const event of events) window.removeEventListener(event, touch, true);
+      window.removeEventListener('focus', check);
+      document.removeEventListener('visibilitychange', check);
+      window.clearInterval(timer);
+    };
+  }, []);
   const [catalog,setCatalog]=useState<Course[]>([]), [credential,setCredential]=useState<Credential>(), [home,setHome]=useState<Home>(), [material,setMaterial]=useState<Material>(), [progress,setProgress]=useState<Progress>();
   const [screen,setScreen]=useState<'home'|'learn'|'progress'>('home'), [question,setQuestion]=useState<Question>(), [choice,setChoice]=useState(''), [result,setResult]=useState<Result>(), [busy,setBusy]=useState(true), [error,setError]=useState('');
   const [rotation,setRotation]=useState<{candidate:Credential; code:string; revision:number; recordId:string}>();
@@ -33,7 +75,7 @@ function App() {
   const [rotationSaved,setRotationSaved]=useState(false);
   const [forget,setForget]=useState(false);
   useEffect(() => {
-    if (!credential) return;
+    if (temporary || !credential) return;
     let disposed = false;
     const check = async () => {
       try {
@@ -61,14 +103,14 @@ function App() {
     const [m,p]=await Promise.all([api<Material>(`/units/${h.next_action.unit_version_id}/material`), api<Progress[]>('/progress',c)]); setMaterial(m);setProgress(p[0]);setHome(h);
   }
   async function perform(fn:()=>Promise<void>) {setBusy(true);setError('');try{await fn();}catch(e){setError(errorText(e));}finally{setBusy(false);}}
-  useEffect(()=>{void perform(async()=>{setCatalog(await api<Course[]>('/catalog')); let c:Credential|undefined;try{c=await readCredential();}catch{setStorageFailed(true);throw new Error('STORAGE_UNAVAILABLE');} if(c){setCredential(c);await load(c);} setStorage(navigator.storage?.persisted && await navigator.storage.persisted()?'永続保存が許可済み':'ブラウザーによる通常保存');});},[]);
+  useEffect(()=>{void perform(async()=>{setCatalog(await api<Course[]>('/catalog')); let c:Credential|undefined;try{c=temporary ? undefined : await readCredential();}catch{setStorageFailed(true);throw new Error('STORAGE_UNAVAILABLE');} if(c){setCredential(c);await load(c);} setStorage(temporary ? '一時利用：このタブのメモリーのみ（端末に保存しません）' : navigator.storage?.persisted && await navigator.storage.persisted()?'永続保存が許可済み':'ブラウザーによる通常保存');});},[]);
   useEffect(()=>{if(!code)return;const timer=window.setTimeout(()=>setCode(''),30000);return()=>window.clearTimeout(timer);},[code]);
   async function start(course:Course) {await perform(async()=>{
     if(storageFailed)throw new Error('STORAGE_UNAVAILABLE');
     const c=credential || await createCredential();
     if(c.courseId && c.courseId!==course.id)throw new Error('EXISTING_CREDENTIAL');
     c.courseId=course.id; await saveCredential(c); setCredential(c);
-    if(navigator.storage?.persist){try{setStorage(await navigator.storage.persist()?'永続保存が許可済み':'ブラウザーによる通常保存');}catch{setStorage('保存の持続性は不明');}}
+    if(!temporary && navigator.storage?.persist){try{setStorage(await navigator.storage.persist()?'永続保存が許可済み':'ブラウザーによる通常保存');}catch{setStorage('保存の持続性は不明');}}
     await api('/records',c,{course_version_id:course.id,study_route:course.language?'practice':'fe',preferred_language:course.language});await load(c);
   });}
   async function nextQuestion() {if(!credential||!home)return;await perform(async()=>{setQuestion(await api<Question>(`/units/${home.next_action.unit_version_id}/review-next`,credential,{}));setChoice('');setResult(undefined);});}
@@ -76,9 +118,10 @@ function App() {
   const complete=progress?.state==='completed';
   const percent=progress?Math.round(progress.correct_count/progress.question_count*100):0;
   const text=material?.markdown.split('```') || [];
-  return <div className="app"><aside className="sidebar"><a className="brand" href="#" onClick={e=>{e.preventDefault();setScreen('home');}}><span className="brand-icon">m.</span>まなびのコード</a><span className="workspace">PERSONAL LEARNING</span><nav>{([['home','⌂','学習ホーム'],['learn','▤','学習する'],['progress','◴','学習の進捗']] as const).map(([s,icon,label])=><button key={s} className={screen===s?'nav active':'nav'} onClick={()=>{setScreen(s);setError('');}} disabled={!home&&s!=='home'}><span>{icon}</span>{label}{s==='learn'&&home?.review_pending_count? <i>{home.review_pending_count}</i>:null}</button>)}</nav><div className="side-note"><span className="leaf">↗</span><strong>自分のペースで、一歩ずつ。</strong><p>読んで、考えて、確かめる。<br/>小さな理解を積み重ねよう。</p></div><div className="side-bottom"><span className="dot"/> 個人学習モード <small>開発プレビュー · P1</small></div></aside>
-    <div className="shell"><header><span>マイラーニング <b>/</b> {screen==='home'?'ホーム':screen==='learn'?'教材と確認問題':'学習の進捗'}</span><button className="backup-chip" disabled={busy} onClick={()=>setBackup(true)}>◇ {credential?.backup==='export_action_taken'?'コードの書き出し操作済み':'バックアップ未確認'}</button></header>
+  return <div className="app"><aside className="sidebar"><a className="brand" href="#" onClick={e=>{e.preventDefault();setScreen('home');}}><span className="brand-icon">m.</span>まなびのコード</a><span className="workspace">PERSONAL LEARNING</span><nav>{([['home','⌂','学習ホーム'],['learn','▤','学習する'],['progress','◴','学習の進捗']] as const).map(([s,icon,label])=><button key={s} className={screen===s?'nav active':'nav'} onClick={()=>{setScreen(s);setError('');}} disabled={!home&&s!=='home'}><span>{icon}</span>{label}{s==='learn'&&home?.review_pending_count? <i>{home.review_pending_count}</i>:null}</button>)}</nav><div className="side-note"><span className="leaf">↗</span><strong>自分のペースで、一歩ずつ。</strong><p>読んで、考えて、確かめる。<br/>小さな理解を積み重ねよう。</p></div><div className="side-bottom"><span className="dot"/> {temporary?'一時端末モード':'個人学習モード'} <small>開発プレビュー · P1</small></div></aside>
+    <div className="shell"><header><span>マイラーニング <b>/</b> {screen==='home'?'ホーム':screen==='learn'?'教材と確認問題':'学習の進捗'}</span><button className="text-button" disabled={!temporary&&busy} onClick={()=>{if(temporary)endAllTemporaryTabs();else{window.location.hash='temporary';window.location.reload();}}}>{temporary?'離席・終了する':'教室・共用PCで一時利用'}</button><button className="backup-chip" disabled={busy} onClick={()=>setBackup(true)}>◇ {credential?.backup==='export_action_taken'?'コードの書き出し操作済み':'バックアップ未確認'}</button></header>
     <main><div className="eyebrow">LEARN AT YOUR OWN PACE</div><h1>{screen==='home'?(home?'今日も、ひとつずつ。':'はじめの一歩を、ここから。'):screen==='learn'?'理解を、自分のものに。':'積み重ねが、見える。'}</h1><p className="lead">{screen==='home'?'アカウント登録なしで始められる、プログラミング学習。':screen==='learn'?'教材を読み、確認問題で理解を確かめましょう。':'この学習キーに紐づく学習記録です。'}</p>
+      {temporary&&<section className="panel temporary-notice"><h2>一時端末モード</h2><p>学習キーをこのブラウザーに保存しません。再読み込み・タブを閉じる・「離席・終了する」・このサイトでの無操作60分で再入力が必要になります。IDEでの作業はサイトの操作には数えません。再開用の学習コードを紙などで手元に保管してください。サーバーの学習記録は残ります。</p><button className="secondary" disabled={busy} onClick={()=>setRestore(true)}>持っている学習コードで再開する</button><p>共用PCではこのモードのURL（末尾が #temporary）を使用し、利用者交代時は「離席・終了する」を押して、開いた他のタブも閉じてください。</p></section>}
       {error&&<div className="error" role="alert">{error}<button onClick={()=>setRestore(true)}>学習コードで復旧</button></div>}
       {busy&&<p role="status" className="loading">読み込み・保存中…</p>}
       {!home&&screen==='home'&&<><div className="section-heading"><h2>学びたいコースを選ぶ</h2><span>3つの入口からスタート</span></div><div className="course-grid">{catalog.map((c,i)=><article className="course-card" key={c.id}><div className={'language-icon lang-'+i}>{c.language==='python'?'Py':c.language==='java'?'Jv':'FE'}</div><span className="tag">{c.language?'プログラミング実践':'資格の基礎'}</span><h3>{c.title}</h3><p>{c.language?'条件分岐と繰り返しから、処理の流れを学ぶ。':'疑似言語を読み、変数の変化を追う。言語環境の準備は不要です。'}</p><small>入門 · 教材1単元／確認問題2問</small><button className="primary" disabled={busy||storageFailed||!!credential&&credential.courseId!==c.id} onClick={()=>void start(c)}>このコースで始める <span>→</span></button></article>)}</div><p className="muted">既に学習コードをお持ちの方は <button className="text-button" onClick={()=>setRestore(true)}>学習記録を復旧する →</button></p></>}
@@ -108,10 +151,18 @@ function App() {
       await saveCredential(candidate);notifyDeviceForgotten();setCredential(candidate);setQuestion(undefined);setChoice('');setResult(undefined);setCode('');setRotation(undefined);setRotationInput('');setRotationSaved(false);setBackup(false);setRestoreInput('');await load(candidate);
     })}>新しいキーへ更新し旧キーを失効する</button></section></div>}
     {forget&&<div className="overlay"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="forget-title"><h2 id="forget-title">この端末の記憶を解除しますか</h2><p>このブラウザーに保存した学習キーとバックアップ操作状態を消します。サーバーの学習記録と、他の端末・保存済みコードの有効性は変わりません。</p><p>再開には保存済みの学習コードが必要です。コードがない場合、本人確認による復旧はできません。</p>{error&&<p role="alert">{error}</p>}<button className="secondary" disabled={busy} onClick={()=>{setForget(false);setError('');}}>キャンセル</button><button className="primary" disabled={busy} onClick={()=>void perform(async()=>{await forgetCredential();setCredential(undefined);setHome(undefined);setMaterial(undefined);setProgress(undefined);setQuestion(undefined);setChoice('');setResult(undefined);setCode('');setRestoreInput('');setRestore(false);setBackup(false);setScreen('home');setForget(false);})}>この端末の記憶を解除する</button></section></div>}
-    {(backup||restore)&&<div className="overlay"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><button className="close" aria-label="閉じる" onClick={()=>{setBackup(false);setRestore(false);setCode('');setRestoreInput('');}}>×</button><h2 id="modal-title">{restore?'学習記録を復旧する':'学習キーを手元に保管する'}</h2>{restore?<><p>学習コードはこのブラウザーで検証します。現在のキーは、復旧先を確認した後で置き換えます。</p><label>学習コード<textarea autoComplete="off" spellCheck={false} value={restoreInput} onChange={e=>setRestoreInput(e.target.value)} placeholder="LS1-…"/></label><button className="primary" disabled={busy||!restoreInput} onClick={()=>void perform(async()=>{let c;try{c=await importCode(restoreInput);}catch{setError('学習コードを確認してください。文字・長さ・検査値が一致しません。');return;}const h=await api<Home>('/learning-home',c);c.courseId=h.next_action.course_version_id;c.backup='restore_checked';await saveCredential(c);setCredential(c);await load(c);setRestore(false);setBackup(false);setRestoreInput('');setScreen('home');})}>復旧先を確認してこの端末に保存</button></>:<><p>保存は任意です。ブラウザーのデータを失うと、学習コードがない記録には戻れません。コードを知る人は学習記録にアクセスできます。共有フォルダーやGitHubには置かないでください。</p><dl><dt>この端末の保存状態</dt><dd>{storage}</dd><dt>学習していない記録の期限</dt><dd>{home?.retention_kind==='empty'?home.empty_expires_on:'学習開始後は最終活動月から24か月（正式運用時）'}</dd></dl>{credential?<><button className="secondary" disabled={busy} onClick={()=>void perform(async()=>{setCode(await exportCode(credential));})}>学習コードを30秒間表示</button>{code&&<div><pre className="secret">{code}</pre><button className="primary" onClick={()=>void perform(async()=>{const blob=new Blob([code+'\n'],{type:'text/plain;charset=utf-8'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='learning-code.txt';a.click();window.setTimeout(()=>URL.revokeObjectURL(url),1000);const c={...credential,backup:'export_action_taken' as const};await saveCredential(c);setCredential(c);})}>コードをファイルに書き出す</button><p className="muted">書き出し操作は保存成功の証明ではありません。実際にファイルがあるかご自身で確認してください。</p></div>}</>:<p>コースを始めると学習キーが作成されます。</p>}<button className="text-button" disabled={busy} onClick={()=>setRestore(true)}>既存の学習コードから復旧する →</button>{credential&&<button className="secondary full" disabled={busy} onClick={()=>void perform(async()=>{const record=await api<{record_id:string;revision:number}>('/records/me',credential);const candidate=await createCredential();setRotation({candidate,code:await exportCode(candidate),revision:record.revision,recordId:record.record_id});setRotationInput('');setRotationSaved(false);setCode('');setBackup(false);})}>学習キーを更新する</button>}{credential&&<button className="secondary full" disabled={busy} onClick={()=>{setCode('');setBackup(false);setForget(true);}}>この端末の記憶を解除</button>}</>}</section></div>}
+    {(backup||restore)&&<div className="overlay"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><button className="close" aria-label="閉じる" onClick={()=>{setBackup(false);setRestore(false);setCode('');setRestoreInput('');}}>×</button><h2 id="modal-title">{restore?'学習記録を復旧する':'学習キーを手元に保管する'}</h2>{restore?<><p>学習コードはこのブラウザーで検証します。現在のキーは、復旧先を確認した後で置き換えます。{temporary?'このタブ内だけで利用し、ブラウザーには保存しません。':''}</p><label>学習コード<textarea autoComplete="off" spellCheck={false} value={restoreInput} onChange={e=>setRestoreInput(e.target.value)} placeholder="LS1-…"/></label><button className="primary" disabled={busy||!restoreInput} onClick={()=>void perform(async()=>{let c;try{c=await importCode(restoreInput);}catch{setError('学習コードを確認してください。文字・長さ・検査値が一致しません。');return;}const h=await api<Home>('/learning-home',c);c.courseId=h.next_action.course_version_id;c.backup='restore_checked';await saveCredential(c);setCredential(c);await load(c);setRestore(false);setBackup(false);setRestoreInput('');setScreen('home');})}>復旧先を確認して{temporary?'一時利用を開始':'この端末に保存'}</button></>:<><p>保存は任意です。ブラウザーのデータを失うと、学習コードがない記録には戻れません。コードを知る人は学習記録にアクセスできます。共有フォルダーやGitHubには置かないでください。</p><dl><dt>この端末の保存状態</dt><dd>{storage}</dd><dt>学習していない記録の期限</dt><dd>{home?.retention_kind==='empty'?home.empty_expires_on:'学習開始後は最終活動月から24か月（正式運用時）'}</dd></dl>{credential?<><button className="secondary" disabled={busy} onClick={()=>void perform(async()=>{setCode(await exportCode(credential));})}>学習コードを30秒間表示</button>{code&&<div><pre className="secret">{code}</pre>{!temporary&&<button className="primary" onClick={()=>void perform(async()=>{const blob=new Blob([code+'\n'],{type:'text/plain;charset=utf-8'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='learning-code.txt';a.click();window.setTimeout(()=>URL.revokeObjectURL(url),1000);const c={...credential,backup:'export_action_taken' as const};await saveCredential(c);setCredential(c);})}>コードをファイルに書き出す</button>}<p className="muted">{temporary?'紙などにコードを控えて保管してください。共用PCへのファイル書き出しは提供しません。':'書き出し操作は保存成功の証明ではありません。実際にファイルがあるかご自身で確認してください。'}</p></div>}</>:<p>コースを始めると学習キーが作成されます。</p>}<button className="text-button" disabled={busy} onClick={()=>setRestore(true)}>既存の学習コードから復旧する →</button>{!temporary&&credential&&<button className="secondary full" disabled={busy} onClick={()=>void perform(async()=>{const record=await api<{record_id:string;revision:number}>('/records/me',credential);const candidate=await createCredential();setRotation({candidate,code:await exportCode(candidate),revision:record.revision,recordId:record.record_id});setRotationInput('');setRotationSaved(false);setCode('');setBackup(false);})}>学習キーを更新する</button>}{credential&&<button className="secondary full" disabled={busy} onClick={()=>{if(temporary){endAllTemporaryTabs();return;}setCode('');setBackup(false);setForget(true);}}>{temporary?'離席・終了する':'この端末の記憶を解除'}</button>}</>}</section></div>}
   </div>;
 }
-createRoot(document.getElementById('root')!).render(<App/>);
+const root = createRoot(document.getElementById('root')!);
+if (temporary) {
+  window.addEventListener('pagehide', () => { ended = true; requests.abort(); root.unmount(); });
+  window.addEventListener('pageshow', event => { if (event.persisted) window.location.reload(); });
+}
+root.render(<App/>);
+
+
+
 
 
 
