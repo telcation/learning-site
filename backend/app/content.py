@@ -77,6 +77,27 @@ for index, old_course in enumerate(COURSES, 1):
                       'revision': 2, 'question_ids': qids}
 COURSES = new_courses + COURSES
 
+ASSIGNMENTS = {}
+for index, unit in enumerate(UNITS.values(), 1):
+    course = next(course for course in COURSES if course['id'] == unit['course_version_id'])
+    language = course['language']
+    assignment_id = uid(500000 + index)
+    if language == 'python':
+        requirements = '教材のコードを手元のPythonで実行し、結果が4になることを確認してください。\n次に range(1, 6) に変更して結果を予測し、実行して9になることを確かめます。\nさらに条件を n % 2 == 0 に変え、結果が6になる理由を考えて確認してください。'
+        target = 'practice/odd_sum.py'
+    elif language == 'java':
+        requirements = '教材の処理を手元のJavaのmainメソッドに書き、結果が4になることを確認してください。\n次にループ条件を n < 6 に変更して結果を予測し、実行して9になることを確かめます。\nさらに条件を n % 2 == 0 に変え、結果が6になる理由を考えて確認してください。'
+        target = 'practice/OddSum.java'
+    else:
+        requirements = 'IDEの準備は不要です。教材の疑似言語を紙や手元のメモでトレースし、最後のtotalが4になることを確認してください。\nnの範囲を1から5までに変え、最後のtotalが9になることを確かめます。\nさらに偶数だけを加算する条件に変え、最後のtotalが6になる理由を考えて確認してください。'
+        target = 'practice/trace.txt'
+    ASSIGNMENTS[assignment_id] = dict(assignment_version_id=assignment_id, unit_version_id=unit['unit_version_id'],
+        requirements=requirements, target_path=target, rubric_items=[
+            dict(rubric_item_id=uid(600000 + index*10 + k), ordinal=k, required=True, description=description)
+            for k, description in enumerate(['教材どおりの処理で結果が4になることを確認した',
+                '1から5までの奇数を加算すると9になることを確認した',
+                '1から5までの偶数を加算すると6になる理由を考え、確認した'], 1)])
+
 
 def public_question(qid):
     return {k: v for k, v in QUESTIONS[qid].items() if k not in ('correct_ids', 'explanation')}

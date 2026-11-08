@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse, Response
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
-from .content import COURSES, UNITS, QUESTIONS, public_question
+from .content import COURSES, UNITS, QUESTIONS, ASSIGNMENTS, public_question
 from .security import parse_token, digest, UUID_PATTERN
 from .deletions import DeletionLedger, purge_record
 from .retention import retention_status
@@ -57,6 +57,7 @@ def create_app(database_url=None, pepper=None):
             'CREATE TABLE IF NOT EXISTS revoked_credentials (credential_id TEXT PRIMARY KEY, record_id TEXT NOT NULL REFERENCES records(id))',
             'CREATE TABLE IF NOT EXISTS app_metadata (name TEXT PRIMARY KEY, value TEXT NOT NULL)',
             'CREATE TABLE IF NOT EXISTS enrollments (record_id TEXT NOT NULL REFERENCES records(id), course_version_id TEXT NOT NULL, completed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(record_id,course_version_id))',
+            'CREATE TABLE IF NOT EXISTS practice_attempts (id TEXT PRIMARY KEY, record_id TEXT NOT NULL REFERENCES records(id), assignment_version_id TEXT NOT NULL, sequence INTEGER NOT NULL, self_confirmed INTEGER NOT NULL, self_checks TEXT NOT NULL, revision INTEGER NOT NULL, UNIQUE(record_id,sequence))',
         ]:
             c.exec_driver_sql(statement)
         c.exec_driver_sql('INSERT OR IGNORE INTO enrollments (record_id,course_version_id,completed) SELECT id,course_id,completed FROM records')
@@ -86,7 +87,16 @@ def create_app(database_url=None, pepper=None):
     async def boundary(request: Request, call_next):
         try:
             if request.url.query:
-                raise Failure(400, 'INVALID_REQUEST')
+                if request.method != 'GET' or request.url.path != '/api/v1/practice-attempts':
+                    raise Failure(400, 'INVALID_REQUEST')
+                params = list(request.query_params.multi_items())
+                if len({key for key, _ in params}) != len(params) or any(key not in ('limit', 'after_id') for key, _ in params):
+                    raise Failure(400, 'INVALID_REQUEST')
+                for key, value in params:
+                    if key == 'after_id' and not re.fullmatch(UUID_PATTERN, value):
+                        raise Failure(400, 'INVALID_REQUEST')
+                    if key == 'limit' and (not re.fullmatch(r'[1-9][0-9]{0,2}', value) or not 1 <= int(value) <= 100):
+                        raise Failure(400, 'INVALID_REQUEST')
             if request.method in ('POST', 'PUT', 'PATCH'):
                 data = bytearray()
                 async for chunk in request.stream():
@@ -390,6 +400,85 @@ def create_app(database_url=None, pepper=None):
                      for qid in unit['question_ids']]
             return dict(items=items, next_after_id=None, has_more=False)
 
+    @app.get('/api/v1/units/{unit_id}/assignments')
+    def assignments(unit_id: str, request: Request):
+        with engine.connect() as c:
+            r = owner(c, request)
+            enrolled_unit(c, r, unit_id)
+            return dict(items=[dict(assignment_version_id=a['assignment_version_id'], unit_version_id=unit_id, required=False)
+                              for a in ASSIGNMENTS.values() if a['unit_version_id'] == unit_id], next_after_id=None, has_more=False)
+
+    @app.get('/api/v1/assignments/{assignment_id}')
+    def assignment(assignment_id: str, request: Request):
+        with engine.connect() as c:
+            r = owner(c, request)
+            a = ASSIGNMENTS.get(assignment_id)
+            if not a:
+                raise Failure(404, 'NOT_FOUND')
+            enrolled_unit(c, r, a['unit_version_id'])
+            return a
+
+    def practice_result(row):
+        return dict(practice_attempt_id=row['id'], assignment_version_id=row['assignment_version_id'],
+                    sequence_no=row['sequence'], self_confirmed=bool(row['self_confirmed']),
+                    self_checks=json.loads(row['self_checks']), revision=row['revision'])
+
+    @app.post('/api/v1/practice-attempts')
+    def record_practice(request: Request):
+        b = body(request, ['assignment_version_id', 'self_checks'])
+        uuid(b['assignment_version_id'])
+        checks = b['self_checks']
+        if not isinstance(checks, list) or not 1 <= len(checks) <= 30:
+            raise Failure(400, 'INVALID_REQUEST')
+        values = {}
+        for check in checks:
+            if not isinstance(check, dict) or set(check) != {'rubric_item_id', 'met'} or type(check['met']) is not bool:
+                raise Failure(400, 'INVALID_REQUEST')
+            item_id = uuid(check['rubric_item_id'])
+            if item_id in values:
+                raise Failure(400, 'INVALID_REQUEST')
+            values[item_id] = check['met']
+        with transaction() as c:
+            r = owner(c, request)
+            a = ASSIGNMENTS.get(b['assignment_version_id'])
+            if not a:
+                raise Failure(404, 'NOT_FOUND')
+            enrolled_unit(c, r, a['unit_version_id'])
+            if set(values) != {item['rubric_item_id'] for item in a['rubric_items']}:
+                raise Failure(400, 'INVALID_REQUEST')
+            def action():
+                normalized = [dict(rubric_item_id=item['rubric_item_id'], met=values[item['rubric_item_id']]) for item in a['rubric_items']]
+                confirmed = all(values[item['rubric_item_id']] for item in a['rubric_items'] if item['required'])
+                sequence = c.execute(text('SELECT coalesce(max(sequence),0)+1 FROM practice_attempts WHERE record_id=:rid'), {'rid': r['id']}).scalar_one()
+                attempt_id = str(uuid4())
+                c.execute(text('INSERT INTO practice_attempts VALUES (:id,:rid,:aid,:seq,:confirmed,:checks,:revision)'),
+                          {'id': attempt_id, 'rid': r['id'], 'aid': a['assignment_version_id'], 'seq': sequence,
+                           'confirmed': int(confirmed), 'checks': json.dumps(normalized), 'revision': r['revision']+1})
+                c.execute(text('UPDATE records SET evidence=1,empty_expires_on=NULL,last_active_month=:month,revision=revision+1 WHERE id=:rid'),
+                          {'rid': r['id'], 'month': today().replace(day=1).isoformat()})
+                return practice_result(c.execute(text('SELECT * FROM practice_attempts WHERE id=:id'), {'id': attempt_id}).mappings().one())
+            return idempotent(c, request, action, 201)
+
+    @app.get('/api/v1/practice-attempts')
+    def practice_history(request: Request):
+        with engine.connect() as c:
+            r = owner(c, request)
+            limit = int(request.query_params.get('limit', '50'))
+            after_id = request.query_params.get('after_id')
+            cursor = None
+            if after_id is not None:
+                cursor = c.execute(text('SELECT sequence FROM practice_attempts WHERE id=:id AND record_id=:rid'),
+                                   {'id': after_id, 'rid': r['id']}).scalar_one_or_none()
+                if cursor is None:
+                    raise Failure(404, 'NOT_FOUND')
+            rows = list(c.execute(text('SELECT * FROM practice_attempts WHERE record_id=:rid' +
+                        (' AND sequence < :cursor' if cursor is not None else '') + ' ORDER BY sequence DESC LIMIT :limit'),
+                        {'rid': r['id'], 'cursor': cursor, 'limit': limit+1}).mappings())
+            more = len(rows) > limit
+            rows = rows[:limit]
+            return dict(items=[practice_result(row) for row in rows], has_more=more,
+                        next_after_id=rows[-1]['id'] if more else None)
+
     @app.post('/api/v1/units/{unit_id}/review-next')
     def review(unit_id: str, request: Request):
         body(request, [])
@@ -457,11 +546,12 @@ def create_app(database_url=None, pepper=None):
         with engine.connect() as c:
             r = owner(c, request)
             answers = latest(c, r['id'])
+            practice_units = {ASSIGNMENTS[aid]['unit_version_id'] for aid in c.execute(text('SELECT DISTINCT assignment_version_id FROM practice_attempts WHERE record_id=:rid'), {'rid': r['id']}).scalars() if aid in ASSIGNMENTS}
             result = []
             for cid, done in c.execute(text('SELECT course_version_id,completed FROM enrollments WHERE record_id=:rid ORDER BY course_version_id'), {'rid': r['id']}):
                 u = next(u for u in UNITS.values() if u['course_version_id'] == cid)
                 n = sum(bool(answers.get(q)) for q in u['question_ids'])
-                started = any(q in answers for q in u['question_ids'])
+                started = any(q in answers for q in u['question_ids']) or u['unit_version_id'] in practice_units
                 result.append(dict(unit_version_id=u['unit_version_id'], state='completed' if done else ('requirements_unmet' if started else 'not_started'),
                          correct_count=n, question_count=len(u['question_ids']), completion_basis='self_confirmed' if done else 'none',
                          objectives=[], review_pending_count=sum(answers.get(q) is False for q in u['question_ids'])))

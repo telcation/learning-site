@@ -16,9 +16,11 @@ def canonical_date(value):
 def retention_status(c, record, as_of):
     has_attempts = bool(c.execute(text('SELECT 1 FROM attempts WHERE record_id=:id LIMIT 1'),
                                   {'id': record['id']}).first())
+    has_practice = bool(c.execute(text('SELECT 1 FROM practice_attempts WHERE record_id=:id LIMIT 1'),
+                                  {'id': record['id']}).first())
     # Never treat evidence-bearing data as an empty record, even if a legacy
     # flag is inconsistent. Evidence is rechecked under the same write lock.
-    learning = bool(record['evidence'] or record['completed'] or has_attempts)
+    learning = bool(record['evidence'] or record['completed'] or has_attempts or has_practice)
     if learning:
         month = canonical_date(record['last_active_month'])
         if month.day != 1:

@@ -3,6 +3,8 @@ import { createRoot } from 'react-dom/client';
 import { bearer, createCredential, exportCode, importCode, readCredential, saveCredential as savePersonalCredential, forgetCredential } from './credential';
 import type { Credential } from './credential';
 import './style.css';
+import { PracticePanel } from './PracticePanel';
+import type { PracticeAttempt, SelfCheck } from './practice';
 import { QuestionNavigator } from './QuestionNavigator';
 import { nextPendingQuestion } from './question-navigation';
 import { ReviewList } from './ReviewList';
@@ -187,6 +189,12 @@ function App() {
       setQuestion(q);setChoice(initialAnswer(q));setResult(undefined);setScreen('learn');
     });
   }
+  async function savePractice(assignmentId:string, checks:SelfCheck[]):Promise<PracticeAttempt> {
+    if(!credential)throw new Error('SESSION_ENDED');
+    setBusy(true);setError('');
+    try{const saved=await api<PracticeAttempt>('/practice-attempts',credential,{assignment_version_id:assignmentId,self_checks:checks});await load(credential);return saved;}
+    finally{setBusy(false);}
+  }
   async function selectQuestion(id:string) {
     if(!credential||!studyQuestions.some(item=>item.question_version_id===id))return;
     await perform(async()=>{setNotice('');const q=await api<Question>(`/questions/${id}`,credential);setQuestion(q);setChoice(initialAnswer(q));setResult(undefined);});
@@ -218,6 +226,7 @@ function App() {
       {!home&&screen==='home'&&<><div className="section-heading"><h2>学びたいコースを選ぶ</h2><span>3つの入口からスタート</span></div><div className="course-grid">{catalog.filter(c=>c.available).map((c,i)=><article className="course-card" key={c.id}><div className={'language-icon lang-'+i}>{c.language==='python'?'Py':c.language==='java'?'Jv':'FE'}</div><span className="tag">{c.language?'プログラミング実践':'資格の基礎'}</span><h3>{c.title}</h3><p>{c.language?'条件分岐と繰り返しから、処理の流れを学ぶ。':'疑似言語を読み、変数の変化を追う。言語環境の準備は不要です。'}</p><small>入門 · 教材1単元／確認問題{c.version===2?4:2}問</small><button className="primary" disabled={busy||storageFailed||!!credential&&credential.courseId!==c.id} onClick={()=>void start(c)}>このコースで始める <span>→</span></button></article>)}</div><p className="muted">既に学習コードをお持ちの方は <button className="text-button" onClick={()=>setRestore(true)}>学習記録を復旧する →</button></p></>}
       {home&&screen==='home'&&<><section className="resume"><div><span className="pill">{complete?'入門単元を修了':'学習をつづける'}</span><p className="course-name">{selected?.title}</p><h2>{material?.title}</h2><p>{complete?'この単元は修了しました。下の一覧から別のコースへ進むか、復習できます。':home.review_pending_count?'確認問題を振り返って、理解を深めましょう。':'順次・選択・反復。プログラムの基本を学びましょう。'}</p><button className="primary" onClick={()=>setScreen('learn')}>{complete?'教材を復習する':'前回のつづきから'} <span>→</span></button></div><div className="ring" style={{'--progress':`${percent}%`} as React.CSSProperties}><div><strong>{percent}<small>%</small></strong><span>確認問題の正答</span></div></div></section><div className="stats"><div><span>確認問題</span><strong>{progress?.correct_count}<small> / {progress?.question_count}問 正解</small></strong></div><div><span>直近が誤答の問題</span><strong>{home.review_pending_count}<small> 問</small></strong></div><div><span>単元の修了</span><strong>{complete?'1':'0'}<small> / 1単元</small></strong></div></div></>}
       {home&&screen==='learn'&&<div className="learning-grid"><article className="lesson panel"><div className="section-heading"><span className="tag">LESSON 01</span><small>教材 第{material?.revision}版</small></div><h2>{material?.title}</h2><p className="lesson-text">{text[0]}</p><pre><code>{text[1]?.trim()}</code></pre><p>{text[2]}</p><div className="callout"><strong>手元で試してみよう</strong><p>{selected?.language?'コードの値を変えて、実行結果の違いを確かめましょう。プログラムはご自身のPCで実行します。':'紙や手元のメモに変数の変化を書き出しましょう。インストールは不要です。'}</p></div></article><section className="quiz panel"><div className="section-heading"><h2>理解を確かめる</h2><span className="tag">確認問題</span></div><QuestionNavigator items={studyQuestions} current={question?.question_version_id} busy={busy} onSelect={id=>void selectQuestion(id)}/>{!question?<><p>{progress?.question_count}問の確認問題で、処理の流れを確かめましょう。</p><button className="primary" disabled={busy} onClick={()=>void nextQuestion()}>確認問題へ →</button></>:<><h3>{question.prompt}</h3><AnswerInput question={question} value={choice} onChange={setChoice} disabled={busy||!!result}/>{!result?<button className="primary" disabled={!choice.length||busy} onClick={()=>void perform(async()=>{setResult(await api<Result>(`/questions/${question.question_version_id}/attempts`,credential,{choice_ids:choice}));await load(credential!);})}>回答して解説を見る</button>:<div className={result.correct?'feedback correct':'feedback'} role="status"><strong>{result.correct?'✓ 正解です':'もう一度、処理を追ってみよう'}</strong><p>{result.explanation}</p>{result.is_repeat&&<small>同じ問題での復習です。</small>}<div className="quiz-next-actions"><button className="secondary" disabled={busy} onClick={()=>{setNotice('');setChoice(initialAnswer(question));setResult(undefined);}}>この問題をもう一度解く</button>{nextPending?<button className="secondary" disabled={busy} onClick={()=>void nextQuestion()}>{result.correct?'次の未回答・誤答の問題へ →':'この問題は後で復習して、次へ →'}</button>:!result.correct?<><p>この単元の未回答・直近誤答は、この問題だけです。後で「復習する」から取り組むこともできます。</p><button className="secondary" disabled={busy} onClick={()=>setScreen('home')}>学習ホームへ（後で復習する）</button></>:<p>{complete?'修了済みです。必要な問題は上の一覧から復習できます。':'全問正解しています。下のボタンで単元の修了を確認できます。'}</p>}</div></div>}</>}{progress?.correct_count===progress?.question_count&&<button className="secondary full" disabled={busy||complete} onClick={()=>void perform(async()=>{await api(`/units/${home.next_action.unit_version_id}/assess`,credential,{});await load(credential!);})}>{complete?'✓ この単元は修了済みです':'単元の修了を確認する'}</button>}</section></div>}
+      {home&&credential&&screen==='learn'&&<PracticePanel key={credential.id+':'+home.next_action.unit_version_id} unitId={home.next_action.unit_version_id} request={async <T,>(path:string)=>api<T>(path,credential)} onSave={savePractice}/>}
       {home&&screen==='review'&&<ReviewList courses={reviews} catalog={catalog} busy={busy} onSelect={item=>void startReview(item)} onRefresh={()=>{if(credential)void perform(()=>refreshReview(credential));}}/>}
       {home&&screen==='progress'&&summary&&<ProgressOverview summary={summary} catalog={catalog} current={home.next_action.course_version_id} busy={busy} onRefresh={()=>{if(credential)void perform(()=>load(credential));}} onSelect={id=>{const course=catalog.find(c=>c.id===id);if(course)void switchCourse(course);}}/>}
       {home&&screen==='progress'&&<section className="panel"><div className="section-heading"><h2>{selected?.title}</h2><span className="tag">教材 第{material?.revision}版</span></div><div className="progress-row"><div><strong>{material?.title}</strong><p>{complete?'修了済み':progress?.correct_count?'学習中':'これから学習'} · 確認問題 {progress?.correct_count} / {progress?.question_count} 問正解</p></div><span className={complete?'status done':'status'}>{complete?'✓ 修了':'学習中'}</span></div><div className="track"><div style={{width:`${percent}%`}}/></div><p className="muted">この入門単元は必須の{progress?.question_count}問すべてに正解すると修了できます。修了後の復習で間違えても修了記録は保持されます。</p></section>}
@@ -271,6 +280,7 @@ if (temporary) {
   window.addEventListener('pageshow', event => { if (event.persisted) window.location.reload(); });
 }
 root.render(<App/>);
+
 
 
 
