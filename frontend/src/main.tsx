@@ -3,8 +3,10 @@ import { createRoot } from 'react-dom/client';
 import { bearer, createCredential, exportCode, importCode, readCredential, saveCredential as savePersonalCredential, forgetCredential } from './credential';
 import type { Credential } from './credential';
 import './style.css';
+import { QuestionNavigator } from './QuestionNavigator';
+import { nextPendingQuestion } from './question-navigation';
 import { ReviewList } from './ReviewList';
-import type { QuestionPage, ReviewCourse, ReviewItem } from './review';
+import type { QuestionSummary, QuestionPage, ReviewCourse, ReviewItem } from './review';
 import { ProgressOverview } from './ProgressOverview';
 import { summarizeProgress } from './progress-summary';
 import type { CourseOutline, ProgressSummary, UnitProgress } from './progress-summary';
@@ -59,11 +61,13 @@ async function api<T>(path:string, credential?:Credential, body?:unknown, reques
 }
 async function learningSnapshot(c:Credential) {
   const h=await api<Home>('/learning-home',c);
-  const [m,p,outlines]=await Promise.all([
+  const [m,p,outlines,questionPage]=await Promise.all([
     api<Material>(`/units/${h.next_action.unit_version_id}/material`),api<Progress[]>('/progress',c),
-    Promise.all(h.enrolled_course_version_ids.map(id=>api<CourseOutline>(`/courses/${id}/outline`)))
+    Promise.all(h.enrolled_course_version_ids.map(id=>api<CourseOutline>(`/courses/${id}/outline`))),
+    api<QuestionPage>(`/units/${h.next_action.unit_version_id}/questions`,c)
   ]);
-  return {h,m,p,summary:summarizeProgress(outlines,p)};
+  if(questionPage.has_more||questionPage.next_after_id!==null)throw new Error('QUESTIONS_INCOMPLETE');
+  return {h,m,p,questionPage,summary:summarizeProgress(outlines,p)};
 }
 async function reviewSnapshot(c:Credential):Promise<ReviewCourse[]> {
   const h=await api<Home>('/learning-home',c);
@@ -101,6 +105,7 @@ function App() {
     };
   }, []);
   const [catalog,setCatalog]=useState<Course[]>([]), [credential,setCredential]=useState<Credential>(), [home,setHome]=useState<Home>(), [material,setMaterial]=useState<Material>(), [progress,setProgress]=useState<Progress>();
+  const [studyQuestions,setStudyQuestions]=useState<QuestionSummary[]>([]);
   const [reviews,setReviews]=useState<ReviewCourse[]>();
   const [summary,setSummary]=useState<ProgressSummary>();
   const [screen,setScreen]=useState<'home'|'learn'|'progress'|'review'>('home'), [question,setQuestion]=useState<Question>(), [choice,setChoice]=useState<string[]>([]), [result,setResult]=useState<Result>(), [busy,setBusy]=useState(true), [error,setError]=useState('');
@@ -137,9 +142,9 @@ function App() {
   }, [credential]);
   const [backup,setBackup]=useState(false),[restore,setRestore]=useState(false),[code,setCode]=useState(''),[restoreInput,setRestoreInput]=useState(''),[storage,setStorage]=useState('確認中'),[storageFailed,setStorageFailed]=useState(false);
   async function load(c:Credential) {
-    const {h,m,p,summary:nextSummary}=await learningSnapshot(c);
+    const {h,m,p,questionPage,summary:nextSummary}=await learningSnapshot(c);
     if(home&&home.next_action.unit_version_id!==h.next_action.unit_version_id){setQuestion(undefined);setChoice([]);setResult(undefined);}
-    setMaterial(m);setProgress(p.find(item=>item.unit_version_id===h.next_action.unit_version_id));setHome(h);setSummary(nextSummary);return h;
+    setMaterial(m);setProgress(p.find(item=>item.unit_version_id===h.next_action.unit_version_id));setHome(h);setSummary(nextSummary);setStudyQuestions(questionPage.items);return h;
   }
   async function refreshReview(c:Credential) {
     setReviews(undefined);
@@ -182,9 +187,24 @@ function App() {
       setQuestion(q);setChoice(initialAnswer(q));setResult(undefined);setScreen('learn');
     });
   }
-  async function nextQuestion() {if(!credential||!home)return;await perform(async()=>{const q=await api<Question>(`/units/${home.next_action.unit_version_id}/review-next`,credential,{});setQuestion(q);setChoice(initialAnswer(q));setResult(undefined);});}
-  const selected=catalog.find(c=>c.id===home?.next_action.course_version_id);
+  async function selectQuestion(id:string) {
+    if(!credential||!studyQuestions.some(item=>item.question_version_id===id))return;
+    await perform(async()=>{setNotice('');const q=await api<Question>(`/questions/${id}`,credential);setQuestion(q);setChoice(initialAnswer(q));setResult(undefined);});
+  }
+  async function nextQuestion() {
+    if(!credential||!home)return;
+    await perform(async()=>{
+      setNotice('');
+      const page=await api<QuestionPage>(`/units/${home.next_action.unit_version_id}/questions`,credential);
+      if(page.has_more||page.next_after_id!==null)throw new Error('QUESTIONS_INCOMPLETE');
+      setStudyQuestions(page.items);
+      const id=nextPendingQuestion(page.items,question?.question_version_id)||(!question?page.items[0]?.question_version_id:undefined);
+      if(!id){await load(credential);setNotice('ほかに未回答・直近誤答の問題はありません。問題一覧から復習する問題を選ぶか、全問正解なら単元の修了を確認してください。');return;}
+      const q=await api<Question>(`/questions/${id}`,credential);setQuestion(q);setChoice(initialAnswer(q));setResult(undefined);
+    });
+  }  const selected=catalog.find(c=>c.id===home?.next_action.course_version_id);
   const courseOptions=home?catalog.filter(course=>home.enrolled_course_version_ids.includes(course.id)||course.available&&!home.enrolled_course_version_ids.some(id=>catalog.find(c=>c.id===id)?.course_id===course.course_id)):[];
+  const nextPending=question?nextPendingQuestion(studyQuestions,question.question_version_id):undefined;
   const complete=progress?.state==='completed';
   const percent=progress?Math.round(progress.correct_count/progress.question_count*100):0;
   const text=material?.markdown.split('```') || [];
@@ -197,7 +217,7 @@ function App() {
       {busy&&<p role="status" className="loading">読み込み・保存中…</p>}
       {!home&&screen==='home'&&<><div className="section-heading"><h2>学びたいコースを選ぶ</h2><span>3つの入口からスタート</span></div><div className="course-grid">{catalog.filter(c=>c.available).map((c,i)=><article className="course-card" key={c.id}><div className={'language-icon lang-'+i}>{c.language==='python'?'Py':c.language==='java'?'Jv':'FE'}</div><span className="tag">{c.language?'プログラミング実践':'資格の基礎'}</span><h3>{c.title}</h3><p>{c.language?'条件分岐と繰り返しから、処理の流れを学ぶ。':'疑似言語を読み、変数の変化を追う。言語環境の準備は不要です。'}</p><small>入門 · 教材1単元／確認問題{c.version===2?4:2}問</small><button className="primary" disabled={busy||storageFailed||!!credential&&credential.courseId!==c.id} onClick={()=>void start(c)}>このコースで始める <span>→</span></button></article>)}</div><p className="muted">既に学習コードをお持ちの方は <button className="text-button" onClick={()=>setRestore(true)}>学習記録を復旧する →</button></p></>}
       {home&&screen==='home'&&<><section className="resume"><div><span className="pill">{complete?'入門単元を修了':'学習をつづける'}</span><p className="course-name">{selected?.title}</p><h2>{material?.title}</h2><p>{complete?'この単元は修了しました。下の一覧から別のコースへ進むか、復習できます。':home.review_pending_count?'確認問題を振り返って、理解を深めましょう。':'順次・選択・反復。プログラムの基本を学びましょう。'}</p><button className="primary" onClick={()=>setScreen('learn')}>{complete?'教材を復習する':'前回のつづきから'} <span>→</span></button></div><div className="ring" style={{'--progress':`${percent}%`} as React.CSSProperties}><div><strong>{percent}<small>%</small></strong><span>確認問題の正答</span></div></div></section><div className="stats"><div><span>確認問題</span><strong>{progress?.correct_count}<small> / {progress?.question_count}問 正解</small></strong></div><div><span>直近が誤答の問題</span><strong>{home.review_pending_count}<small> 問</small></strong></div><div><span>単元の修了</span><strong>{complete?'1':'0'}<small> / 1単元</small></strong></div></div></>}
-      {home&&screen==='learn'&&<div className="learning-grid"><article className="lesson panel"><div className="section-heading"><span className="tag">LESSON 01</span><small>教材 第{material?.revision}版</small></div><h2>{material?.title}</h2><p className="lesson-text">{text[0]}</p><pre><code>{text[1]?.trim()}</code></pre><p>{text[2]}</p><div className="callout"><strong>手元で試してみよう</strong><p>{selected?.language?'コードの値を変えて、実行結果の違いを確かめましょう。プログラムはご自身のPCで実行します。':'紙や手元のメモに変数の変化を書き出しましょう。インストールは不要です。'}</p></div></article><section className="quiz panel"><div className="section-heading"><h2>理解を確かめる</h2><span className="tag">確認問題</span></div>{!question?<><p>{progress?.question_count}問の確認問題で、処理の流れを確かめましょう。</p><button className="primary" disabled={busy} onClick={()=>void nextQuestion()}>確認問題へ →</button></>:<><h3>{question.prompt}</h3><AnswerInput question={question} value={choice} onChange={setChoice} disabled={busy||!!result}/>{!result?<button className="primary" disabled={!choice.length||busy} onClick={()=>void perform(async()=>{setResult(await api<Result>(`/questions/${question.question_version_id}/attempts`,credential,{choice_ids:choice}));await load(credential!);})}>回答して解説を見る</button>:<div className={result.correct?'feedback correct':'feedback'} role="status"><strong>{result.correct?'✓ 正解です':'もう一度、処理を追ってみよう'}</strong><p>{result.explanation}</p>{result.is_repeat&&<small>同じ問題での復習です。</small>}<button className="secondary" disabled={busy} onClick={()=>void nextQuestion()}>次の確認・復習へ →</button></div>}</>}{progress?.correct_count===progress?.question_count&&<button className="secondary full" disabled={busy||complete} onClick={()=>void perform(async()=>{await api(`/units/${home.next_action.unit_version_id}/assess`,credential,{});await load(credential!);})}>{complete?'✓ この単元は修了済みです':'単元の修了を確認する'}</button>}</section></div>}
+      {home&&screen==='learn'&&<div className="learning-grid"><article className="lesson panel"><div className="section-heading"><span className="tag">LESSON 01</span><small>教材 第{material?.revision}版</small></div><h2>{material?.title}</h2><p className="lesson-text">{text[0]}</p><pre><code>{text[1]?.trim()}</code></pre><p>{text[2]}</p><div className="callout"><strong>手元で試してみよう</strong><p>{selected?.language?'コードの値を変えて、実行結果の違いを確かめましょう。プログラムはご自身のPCで実行します。':'紙や手元のメモに変数の変化を書き出しましょう。インストールは不要です。'}</p></div></article><section className="quiz panel"><div className="section-heading"><h2>理解を確かめる</h2><span className="tag">確認問題</span></div><QuestionNavigator items={studyQuestions} current={question?.question_version_id} busy={busy} onSelect={id=>void selectQuestion(id)}/>{!question?<><p>{progress?.question_count}問の確認問題で、処理の流れを確かめましょう。</p><button className="primary" disabled={busy} onClick={()=>void nextQuestion()}>確認問題へ →</button></>:<><h3>{question.prompt}</h3><AnswerInput question={question} value={choice} onChange={setChoice} disabled={busy||!!result}/>{!result?<button className="primary" disabled={!choice.length||busy} onClick={()=>void perform(async()=>{setResult(await api<Result>(`/questions/${question.question_version_id}/attempts`,credential,{choice_ids:choice}));await load(credential!);})}>回答して解説を見る</button>:<div className={result.correct?'feedback correct':'feedback'} role="status"><strong>{result.correct?'✓ 正解です':'もう一度、処理を追ってみよう'}</strong><p>{result.explanation}</p>{result.is_repeat&&<small>同じ問題での復習です。</small>}<div className="quiz-next-actions"><button className="secondary" disabled={busy} onClick={()=>{setNotice('');setChoice(initialAnswer(question));setResult(undefined);}}>この問題をもう一度解く</button>{nextPending?<button className="secondary" disabled={busy} onClick={()=>void nextQuestion()}>{result.correct?'次の未回答・誤答の問題へ →':'この問題は後で復習して、次へ →'}</button>:!result.correct?<><p>この単元の未回答・直近誤答は、この問題だけです。後で「復習する」から取り組むこともできます。</p><button className="secondary" disabled={busy} onClick={()=>setScreen('home')}>学習ホームへ（後で復習する）</button></>:<p>{complete?'修了済みです。必要な問題は上の一覧から復習できます。':'全問正解しています。下のボタンで単元の修了を確認できます。'}</p>}</div></div>}</>}{progress?.correct_count===progress?.question_count&&<button className="secondary full" disabled={busy||complete} onClick={()=>void perform(async()=>{await api(`/units/${home.next_action.unit_version_id}/assess`,credential,{});await load(credential!);})}>{complete?'✓ この単元は修了済みです':'単元の修了を確認する'}</button>}</section></div>}
       {home&&screen==='review'&&<ReviewList courses={reviews} catalog={catalog} busy={busy} onSelect={item=>void startReview(item)} onRefresh={()=>{if(credential)void perform(()=>refreshReview(credential));}}/>}
       {home&&screen==='progress'&&summary&&<ProgressOverview summary={summary} catalog={catalog} current={home.next_action.course_version_id} busy={busy} onRefresh={()=>{if(credential)void perform(()=>load(credential));}} onSelect={id=>{const course=catalog.find(c=>c.id===id);if(course)void switchCourse(course);}}/>}
       {home&&screen==='progress'&&<section className="panel"><div className="section-heading"><h2>{selected?.title}</h2><span className="tag">教材 第{material?.revision}版</span></div><div className="progress-row"><div><strong>{material?.title}</strong><p>{complete?'修了済み':progress?.correct_count?'学習中':'これから学習'} · 確認問題 {progress?.correct_count} / {progress?.question_count} 問正解</p></div><span className={complete?'status done':'status'}>{complete?'✓ 修了':'学習中'}</span></div><div className="track"><div style={{width:`${percent}%`}}/></div><p className="muted">この入門単元は必須の{progress?.question_count}問すべてに正解すると修了できます。修了後の復習で間違えても修了記録は保持されます。</p></section>}
@@ -206,10 +226,10 @@ function App() {
       <footer><span>◇ 氏名・メールアドレス・GitHub情報を送信しない設計</span><span>開発版：試験範囲の一部のみ。合格・全範囲の網羅は保証しません。</span></footer>
     </main></div>
     {!temporary&&recovery&&<RecoveryDialog mode={recovery} credential={credential} onClose={()=>setRecovery(undefined)} onExported={async c=>{const saved={...c,backup:c.backup==='restore_checked'?'restore_checked' as const:'export_action_taken' as const};await saveCredential(saved);setCredential(saved);}} onRestore={async c=>{
-      const {h,m,p,summary:nextSummary}=await learningSnapshot(c);
+      const {h,m,p,questionPage,summary:nextSummary}=await learningSnapshot(c);
 
       c.courseId=h.next_action.course_version_id;c.backup='restore_checked';await saveCredential(c);
-      setCredential(c);setHome(h);setSummary(nextSummary);setReviews(undefined);setMaterial(m);setProgress(p.find(item=>item.unit_version_id===h.next_action.unit_version_id));setQuestion(undefined);setChoice([]);setResult(undefined);setCode('');setRestoreInput('');setRotation(undefined);setRotationInput('');setBackup(false);setRestore(false);setScreen('home');setError('');notifyDeviceForgotten();
+      setCredential(c);setHome(h);setSummary(nextSummary);setStudyQuestions(questionPage.items);setReviews(undefined);setMaterial(m);setProgress(p.find(item=>item.unit_version_id===h.next_action.unit_version_id));setQuestion(undefined);setChoice([]);setResult(undefined);setCode('');setRestoreInput('');setRotation(undefined);setRotationInput('');setBackup(false);setRestore(false);setScreen('home');setError('');notifyDeviceForgotten();
     }}/>}
     {deletion&&<div className="overlay"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="delete-title"><h2 id="delete-title">サーバーの学習記録を削除する</h2><p>現在の学習キーに結び付く全コースの学習記録・回答・進捗をサーバーから削除します。他の端末からもこの記録は使えなくなり、保存済みのコードでも復旧できません。</p><p>このPCの保存だけを解除したい場合は、キャンセルして「この端末の記憶を解除」を使ってください。</p><p>古いDBバックアップを復元した場合にも再削除するため、学習記録IDだけを含む削除台帳を別途保持します。</p><label><input type="checkbox" checked={deleteConfirmed} onChange={e=>setDeleteConfirmed(e.target.checked)}/>全端末で使っている全コースの学習記録が削除され、コードでも復旧できなくなることを確認しました</label>{error&&<p role="alert">{error}</p>}<button className="secondary" disabled={busy} onClick={()=>{setDeletion(undefined);setDeleteConfirmed(false);setError('');}}>キャンセル</button><button className="primary danger" disabled={busy||!deleteConfirmed} onClick={()=>void perform(async()=>{
       try { await api('/records/me/delete',credential,{confirm:true,revision:deletion.revision},deletion.requestId); }
@@ -219,7 +239,7 @@ function App() {
       }
       let cleared=true;try{await forgetCredential();}catch{cleared=false;}
       notifyDeviceForgotten();
-      setCredential(undefined);setHome(undefined);setMaterial(undefined);setProgress(undefined);setSummary(undefined);setReviews(undefined);setQuestion(undefined);setChoice([]);setResult(undefined);setCode('');setRestoreInput('');setRotation(undefined);setRotationInput('');setRotationSaved(false);setRestore(false);setBackup(false);setForget(false);setScreen('home');setDeletion(undefined);setDeleteConfirmed(false);setStorageFailed(!cleared);
+      setCredential(undefined);setHome(undefined);setMaterial(undefined);setProgress(undefined);setSummary(undefined);setStudyQuestions([]);setReviews(undefined);setQuestion(undefined);setChoice([]);setResult(undefined);setCode('');setRestoreInput('');setRotation(undefined);setRotationInput('');setRotationSaved(false);setRestore(false);setBackup(false);setForget(false);setScreen('home');setDeletion(undefined);setDeleteConfirmed(false);setStorageFailed(!cleared);
       setNotice(cleared?'サーバーの学習記録と、このブラウザーの保存キーを削除しました。':'サーバーの学習記録は削除しましたが、このブラウザーの保存キーを消せませんでした。ブラウザーの設定からこのサイトのデータを削除してください。');
     })}>学習記録を削除する（取り消せません）</button></section></div>}
     {rotation&&<div className="overlay"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="rotation-title"><h2 id="rotation-title">学習キーを更新する</h2><p>更新すると、他の端末を含むすべての旧キーと旧バックアップが使えなくなります。学習記録は維持されます。次の3つの手順で、新しいコードを保管・確認してから更新してください。</p>
@@ -241,7 +261,7 @@ function App() {
       candidate.courseId=credential?.courseId;candidate.backup='restore_checked';
       await saveCredential(candidate);notifyDeviceForgotten();setCredential(candidate);setQuestion(undefined);setChoice([]);setResult(undefined);setCode('');setRotation(undefined);setRotationInput('');setRotationSaved(false);setBackup(false);setRestoreInput('');await load(candidate);
     })}>新しいキーへ更新し旧キーを失効する</button></section></div>}
-    {forget&&<div className="overlay"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="forget-title"><h2 id="forget-title">この端末の記憶を解除しますか</h2><p>このブラウザーに保存した学習キーとバックアップ操作状態を消します。サーバーの学習記録と、他の端末・保存済みコードの有効性は変わりません。</p><p>再開には保存済みの学習コードが必要です。コードがない場合、本人確認による復旧はできません。</p>{error&&<p role="alert">{error}</p>}<button className="secondary" disabled={busy} onClick={()=>{setForget(false);setError('');}}>キャンセル</button><button className="primary" disabled={busy} onClick={()=>void perform(async()=>{await forgetCredential();setCredential(undefined);setHome(undefined);setMaterial(undefined);setProgress(undefined);setSummary(undefined);setReviews(undefined);setQuestion(undefined);setChoice([]);setResult(undefined);setCode('');setRestoreInput('');setRestore(false);setBackup(false);setScreen('home');setForget(false);})}>この端末の記憶を解除する</button></section></div>}
+    {forget&&<div className="overlay"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="forget-title"><h2 id="forget-title">この端末の記憶を解除しますか</h2><p>このブラウザーに保存した学習キーとバックアップ操作状態を消します。サーバーの学習記録と、他の端末・保存済みコードの有効性は変わりません。</p><p>再開には保存済みの学習コードが必要です。コードがない場合、本人確認による復旧はできません。</p>{error&&<p role="alert">{error}</p>}<button className="secondary" disabled={busy} onClick={()=>{setForget(false);setError('');}}>キャンセル</button><button className="primary" disabled={busy} onClick={()=>void perform(async()=>{await forgetCredential();setCredential(undefined);setHome(undefined);setMaterial(undefined);setProgress(undefined);setSummary(undefined);setStudyQuestions([]);setReviews(undefined);setQuestion(undefined);setChoice([]);setResult(undefined);setCode('');setRestoreInput('');setRestore(false);setBackup(false);setScreen('home');setForget(false);})}>この端末の記憶を解除する</button></section></div>}
     {(backup||restore)&&<div className="overlay"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><button className="close" aria-label="閉じる" onClick={()=>{setBackup(false);setRestore(false);setCode('');setRestoreInput('');}}>×</button><h2 id="modal-title">{restore?'学習記録を復旧する':'学習キーを手元に保管する'}</h2>{restore?<><p>学習コードはこのブラウザーで検証します。現在のキーは、復旧先を確認した後で置き換えます。{temporary?'このタブ内だけで利用し、ブラウザーには保存しません。':''}</p><label>学習コード<textarea autoComplete="off" spellCheck={false} value={restoreInput} onChange={e=>setRestoreInput(e.target.value)} placeholder="LS1-…"/></label><button className="primary" disabled={busy||!restoreInput} onClick={()=>void perform(async()=>{let c;try{c=await importCode(restoreInput);}catch{setError('学習コードを確認してください。文字・長さ・検査値が一致しません。');return;}const h=await api<Home>('/learning-home',c);c.courseId=h.next_action.course_version_id;c.backup='restore_checked';await saveCredential(c);setCredential(c);await load(c);setRestore(false);setBackup(false);setRestoreInput('');setScreen('home');})}>復旧先を確認して{temporary?'一時利用を開始':'この端末に保存'}</button>{!temporary&&<><p>暗号化復旧ファイルをお持ちの場合はこちらを使えます。</p><button className="secondary full" disabled={busy||!recoveryOrigin(window.location.origin)} onClick={()=>{setRestore(false);setBackup(false);setRestoreInput('');setRecovery('import');}}>暗号化復旧ファイルを取り込む</button>{!recoveryOrigin(window.location.origin)&&<p>暗号化復旧ファイルはHTTPSのサイトで利用できます。現在のHTTP環境では上のLS1コードをご利用ください。</p>}</>}</>:<><p>保存は任意です。ブラウザーのデータを失うと、学習コードがない記録には戻れません。コードを知る人は学習記録にアクセスできます。共有フォルダーやGitHubには置かないでください。</p><dl><dt>この端末の保存状態</dt><dd>{storage}</dd><dt>学習していない記録の期限</dt><dd>{home?.retention_kind==='empty'?home.empty_expires_on:'最終活動月から24か月。期限後は利用停止し、整理処理で削除します'}</dd></dl>{!temporary&&credential&&<><button className="secondary full" disabled={busy||!recoveryOrigin(window.location.origin)} onClick={()=>{setBackup(false);setCode('');setRecovery('export');}}>パスワード付きの暗号化復旧ファイルを保存する</button>{!recoveryOrigin(window.location.origin)&&<p>暗号化復旧ファイルはHTTPSのサイトで利用できます。現在のHTTP環境ではLS1コードの表示・書き出しをご利用ください。</p>}</>}{credential?<><button className="secondary" disabled={busy} onClick={()=>void perform(async()=>{setCode(await exportCode(credential));})}>学習コードを30秒間表示</button>{code&&<div><pre className="secret">{code}</pre>{!temporary&&<button className="primary" onClick={()=>void perform(async()=>{const blob=new Blob([code+'\n'],{type:'text/plain;charset=utf-8'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='learning-code.txt';a.click();window.setTimeout(()=>URL.revokeObjectURL(url),1000);const c={...credential,backup:'export_action_taken' as const};await saveCredential(c);setCredential(c);})}>コードをファイルに書き出す</button>}<p className="muted">{temporary?'紙などにコードを控えて保管してください。共用PCへのファイル書き出しは提供しません。':'書き出し操作は保存成功の証明ではありません。実際にファイルがあるかご自身で確認してください。'}</p></div>}</>:<p>コースを始めると学習キーが作成されます。</p>}<button className="text-button" disabled={busy} onClick={()=>setRestore(true)}>既存の学習コードから復旧する →</button>{!temporary&&credential&&<button className="secondary full danger" disabled={busy} onClick={()=>void perform(async()=>{const record=await api<{revision:number}>('/records/me',credential);setDeletion({revision:record.revision,requestId:crypto.randomUUID()});setDeleteConfirmed(false);setNotice('');setCode('');setBackup(false);})}>サーバーの学習記録を削除する</button>}{!temporary&&credential&&<button className="secondary full" disabled={busy} onClick={()=>void perform(async()=>{const record=await api<{record_id:string;revision:number}>('/records/me',credential);const candidate=await createCredential();setRotation({candidate,code:await exportCode(candidate),revision:record.revision,recordId:record.record_id});setRotationInput('');setRotationSaved(false);setCode('');setBackup(false);})}>学習キーを更新する</button>}{credential&&<button className="secondary full" disabled={busy} onClick={()=>{if(temporary){endAllTemporaryTabs();return;}setCode('');setBackup(false);setForget(true);}}>{temporary?'離席・終了する':'この端末の記憶を解除'}</button>}</>}</section></div>}
   </div>;
 }
@@ -251,6 +271,7 @@ if (temporary) {
   window.addEventListener('pageshow', event => { if (event.persisted) window.location.reload(); });
 }
 root.render(<App/>);
+
 
 
 
