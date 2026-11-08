@@ -99,5 +99,20 @@ for index, unit in enumerate(UNITS.values(), 1):
                 '1から5までの偶数を加算すると6になる理由を考え、確認した'], 1)])
 
 
+OBJECTIVES = {}
+QUESTION_OBJECTIVES = {}
+for unit in UNITS.values():
+    course = next(course for course in COURSES if course['id'] == unit['course_version_id'])
+    base = 700000 + int(unit['unit_version_id'][-12:], 16) * 10
+    goals = [dict(objective_id=uid(base+k), kind=course['language'] or 'concept', description=description)
+             for k, description in enumerate(['繰り返し処理を読み取る', '条件分岐による加算対象を判断する',
+                                               '変数の変化や処理の順序を追う'], 1)]
+    OBJECTIVES[unit['unit_version_id']] = goals
+    for index, qid in enumerate(unit['question_ids']):
+        targets = ([0, 2] if course['language'] is None else [0]) if index == 0 else [1, 2] if index == 1 else [1] if index == 2 else [2]
+        QUESTION_OBJECTIVES[qid] = [goals[k]['objective_id'] for k in targets]
+
+
 def public_question(qid):
     return {k: v for k, v in QUESTIONS[qid].items() if k not in ('correct_ids', 'explanation')}
+

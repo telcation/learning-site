@@ -13,7 +13,8 @@ from fastapi.responses import JSONResponse, Response
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
-from .content import COURSES, UNITS, QUESTIONS, ASSIGNMENTS, public_question
+from .content import COURSES, UNITS, QUESTIONS, ASSIGNMENTS, OBJECTIVES, QUESTION_OBJECTIVES, public_question
+from .objectives import objective_progress
 from .security import parse_token, digest, UUID_PATTERN
 from .deletions import DeletionLedger, purge_record
 from .retention import retention_status
@@ -245,6 +246,12 @@ def create_app(database_url=None, pepper=None):
             raise Failure(404, 'NOT_FOUND')
         return {k: UNITS[unit_id][k] for k in ('unit_version_id', 'revision', 'title', 'markdown')}
 
+    @app.get('/api/v1/units/{unit_id}')
+    def unit_info(unit_id: str):
+        if unit_id not in UNITS:
+            raise Failure(404, 'NOT_FOUND')
+        return dict(unit_version_id=unit_id, title=UNITS[unit_id]['title'], pass_percent=100, objectives=OBJECTIVES[unit_id])
+
     @app.post('/api/v1/records')
     def bootstrap(request: Request):
         ledger.check()
@@ -396,7 +403,7 @@ def create_app(database_url=None, pepper=None):
                 if not correct:
                     incorrect[qid] = incorrect.get(qid, 0) + 1
             items = [dict(question_version_id=qid, kind=QUESTIONS[qid]['kind'], required=True,
-                          objective_ids=[], attempt_count=counts.get(qid, 0), incorrect_count=incorrect.get(qid, 0), latest_correct=answers.get(qid))
+                          objective_ids=QUESTION_OBJECTIVES[qid], attempt_count=counts.get(qid, 0), incorrect_count=incorrect.get(qid, 0), latest_correct=answers.get(qid))
                      for qid in unit['question_ids']]
             return dict(items=items, next_after_id=None, has_more=False)
 
@@ -545,7 +552,10 @@ def create_app(database_url=None, pepper=None):
     def progress(request: Request):
         with engine.connect() as c:
             r = owner(c, request)
-            answers = latest(c, r['id'])
+            answers, first = {}, {}
+            for qid, correct in c.execute(text('SELECT question_id,correct FROM attempts WHERE record_id=:rid ORDER BY sequence'), {'rid': r['id']}):
+                answers[qid] = bool(correct)
+                first.setdefault(qid, bool(correct))
             practice_units = {ASSIGNMENTS[aid]['unit_version_id'] for aid in c.execute(text('SELECT DISTINCT assignment_version_id FROM practice_attempts WHERE record_id=:rid'), {'rid': r['id']}).scalars() if aid in ASSIGNMENTS}
             result = []
             for cid, done in c.execute(text('SELECT course_version_id,completed FROM enrollments WHERE record_id=:rid ORDER BY course_version_id'), {'rid': r['id']}):
@@ -554,7 +564,7 @@ def create_app(database_url=None, pepper=None):
                 started = any(q in answers for q in u['question_ids']) or u['unit_version_id'] in practice_units
                 result.append(dict(unit_version_id=u['unit_version_id'], state='completed' if done else ('requirements_unmet' if started else 'not_started'),
                          correct_count=n, question_count=len(u['question_ids']), completion_basis='self_confirmed' if done else 'none',
-                         objectives=[], review_pending_count=sum(answers.get(q) is False for q in u['question_ids'])))
+                         objectives=objective_progress(u['unit_version_id'], answers, first), review_pending_count=sum(answers.get(q) is False for q in u['question_ids'])))
             return result
 
     return app
