@@ -329,18 +329,22 @@ def create_app(database_url=None, pepper=None):
     def answer(question_id: str, request: Request):
         b = body(request, ['choice_ids'])
         choices = b['choice_ids']
-        if not isinstance(choices, list) or len(choices) != 1:
+        if not isinstance(choices, list) or not 1 <= len(choices) <= 10:
             raise Failure(400, 'INVALID_REQUEST')
-        uuid(choices[0])
+        for choice in choices:
+            uuid(choice)
         with transaction() as c:
             r = owner(c, request)
             if question_id not in unit_for(r)['question_ids']:
                 raise Failure(404, 'NOT_FOUND')
             q = QUESTIONS[question_id]
-            if choices[0] not in [x['id'] for x in q['choices']]:
+            allowed = {x['id'] for x in q['choices']}
+            if (len(set(choices)) != len(choices) or not set(choices) <= allowed
+                    or q['kind'] == 'single' and len(choices) != 1
+                    or q['kind'] == 'order' and len(choices) != len(allowed)):
                 raise Failure(400, 'INVALID_REQUEST')
             def action():
-                correct = choices == q['correct_ids']
+                correct = set(choices) == set(q['correct_ids']) if q['kind'] == 'multi' else choices == q['correct_ids']
                 repeat = question_id in latest(c, r['id'])
                 seq = c.execute(text('SELECT coalesce(max(sequence),0)+1 FROM attempts WHERE record_id=:id'), {'id': r['id']}).scalar_one()
                 aid = str(uuid4())

@@ -41,5 +41,42 @@ for index, (language, title, unit_title, text, code, questions) in enumerate(DAT
     UNITS[unit_id] = dict(unit_version_id=unit_id, course_version_id=cid, revision=1,
                           title=unit_title, markdown=text + '\n\n```\n' + code + '\n```\n\n各回の n と total を手元で追ってから、確認問題に進みましょう。', question_ids=qids)
 
+# Publish a separate immutable version rather than altering old completion rules.
+new_courses = []
+for index, old_course in enumerate(COURSES, 1):
+    old_course['available'] = False
+    old_unit = UNITS[uid(index * 100)]
+    version_index = index + 10
+    cid, unit_id = uid(version_index), uid(version_index * 100)
+    new_courses.append({**old_course, 'id': cid, 'version': 2, 'available': True})
+    qids = []
+    for j, old_qid in enumerate(old_unit['question_ids'], 1):
+        old_q = QUESTIONS[old_qid]
+        opts = [dict(id=uid(version_index * 10000 + j * 10 + k), text=opt['text']) for k, opt in enumerate(old_q['choices'])]
+        correct_index = next(k for k, opt in enumerate(old_q['choices']) if opt['id'] in old_q['correct_ids'])
+        qid = uid(version_index * 100 + j)
+        QUESTIONS[qid] = {**old_q, 'question_version_id': qid, 'unit_version_id': unit_id,
+                          'choices': opts, 'correct_ids': [opts[correct_index]['id']]}
+        qids.append(qid)
+    for j, kind, prompt, labels, correct, explanation in [
+        (3, 'multi', '教材の処理について、正しい説明をすべて選んでください。',
+         ['n が 1 のとき total に加算する', 'n が 2 のとき total に加算する',
+          'n が 3 のとき total に加算する', '最後の total は 6 になる'], [0, 2],
+         '奇数の 1 と 3 だけを加算します。2 は加算せず、最後の total は 4 です。正しい選択肢を過不足なく選ぶと正解です。'),
+        (4, 'order', '教材の処理を大まかな3段階に分けました。実行する順番に並べてください。',
+         ['繰り返し終了後の total を確認する', 'total を 0 に初期化する',
+          'n を 1 から 3 まで順に取り出し、奇数のときだけ total に加算する'], [1, 2, 0],
+         '最初に total を 0 にし、次に繰り返しで加算し、最後に結果を確認します。すべての手順の順序が一致すると正解です。'),
+    ]:
+        qid = uid(version_index * 100 + j)
+        opts = [dict(id=uid(version_index * 10000 + j * 10 + k), text=label) for k, label in enumerate(labels)]
+        QUESTIONS[qid] = dict(question_version_id=qid, unit_version_id=unit_id, kind=kind,
+                              prompt=prompt, choices=opts, correct_ids=[opts[k]['id'] for k in correct], explanation=explanation)
+        qids.append(qid)
+    UNITS[unit_id] = {**old_unit, 'unit_version_id': unit_id, 'course_version_id': cid,
+                      'revision': 2, 'question_ids': qids}
+COURSES = new_courses + COURSES
+
+
 def public_question(qid):
     return {k: v for k, v in QUESTIONS[qid].items() if k not in ('correct_ids', 'explanation')}
