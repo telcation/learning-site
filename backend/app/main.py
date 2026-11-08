@@ -374,6 +374,22 @@ def create_app(database_url=None, pepper=None):
             enrolled_unit(c, r, QUESTIONS[question_id]['unit_version_id'])
             return public_question(question_id)
 
+    @app.get('/api/v1/units/{unit_id}/questions')
+    def unit_questions(unit_id: str, request: Request):
+        with engine.connect() as c:
+            r = owner(c, request)
+            unit = enrolled_unit(c, r, unit_id)
+            answers, counts, incorrect = {}, {}, {}
+            for qid, correct in c.execute(text('SELECT question_id,correct FROM attempts WHERE record_id=:rid ORDER BY sequence'), {'rid': r['id']}):
+                answers[qid] = bool(correct)
+                counts[qid] = counts.get(qid, 0) + 1
+                if not correct:
+                    incorrect[qid] = incorrect.get(qid, 0) + 1
+            items = [dict(question_version_id=qid, kind=QUESTIONS[qid]['kind'], required=True,
+                          objective_ids=[], attempt_count=counts.get(qid, 0), incorrect_count=incorrect.get(qid, 0), latest_correct=answers.get(qid))
+                     for qid in unit['question_ids']]
+            return dict(items=items, next_after_id=None, has_more=False)
+
     @app.post('/api/v1/units/{unit_id}/review-next')
     def review(unit_id: str, request: Request):
         body(request, [])
