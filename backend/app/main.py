@@ -16,6 +16,7 @@ from sqlalchemy.engine import make_url
 from .content import COURSES, UNITS, QUESTIONS, public_question
 from .security import parse_token, digest, UUID_PATTERN
 from .deletions import DeletionLedger, purge_record
+from .retention import retention_status
 import re
 
 JST = timezone(timedelta(hours=9))
@@ -153,7 +154,7 @@ def create_app(database_url=None, pepper=None):
             raise Failure(401, 'UNAUTHORIZED')
         if ledger.contains(record['id']):
             raise Failure(401, 'UNAUTHORIZED')
-        if record['empty_expires_on'] and record['empty_expires_on'] <= today().isoformat():
+        if retention_status(c, record, today())[2]:
             raise Failure(410, 'RECORD_EXPIRED')
         return record
 
@@ -362,7 +363,8 @@ def create_app(database_url=None, pepper=None):
                 if not all(answers.get(q) for q in unit['question_ids']):
                     raise Failure(409, 'REQUIREMENTS_UNMET')
                 if not r['completed']:
-                    c.execute(text('UPDATE records SET completed=1,revision=revision+1 WHERE id=:id'), {'id': r['id']})
+                    c.execute(text('UPDATE records SET completed=1,revision=revision+1,last_active_month=:month WHERE id=:id'),
+                              {'id': r['id'], 'month': today().replace(day=1).isoformat()})
                 revision = c.execute(text('SELECT revision FROM records WHERE id=:id'), {'id': r['id']}).scalar_one()
                 return dict(resource_id=unit_id, revision=revision)
             return idempotent(c, request, action)
