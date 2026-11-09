@@ -19,6 +19,7 @@ from .security import parse_token, digest, UUID_PATTERN
 from .deletions import DeletionLedger, purge_record
 from .credential_ledger import prepare_credential_ledger
 from .retention import retention_status
+from .rate_limit import RateLimiter
 import re
 
 JST = timezone(timedelta(hours=9))
@@ -92,6 +93,8 @@ def create_app(database_url=None, pepper=None):
     app.state.engine = engine
     app.state.ledger = ledger
     app.state.credential_ledger = credential_ledger
+    limiter = RateLimiter()
+    app.state.rate_limiter = limiter
 
     def error(status, code):
         return JSONResponse({'code': code, 'request_id': str(uuid4())}, status_code=status)
@@ -99,6 +102,25 @@ def create_app(database_url=None, pepper=None):
     @app.middleware('http')
     async def boundary(request: Request, call_next):
         try:
+            subjects = []
+            if request.method == 'POST' and request.url.path == '/api/v1/records':
+                # Only the direct socket peer is trusted in this local-only server.
+                # Never use caller-controlled X-Forwarded-For as an identity.
+                subjects.extend([('bootstrap_ip', request.client.host if request.client else 'unknown'),
+                                 ('bootstrap_global', 'all')])
+            if request.url.path.startswith('/api/v1/'):
+                try:
+                    cid, _ = parse_token(request.headers.get('authorization'))
+                    subjects.append(('credential', cid))
+                except ValueError:
+                    pass
+            retry = limiter.check(subjects)
+            if retry:
+                response = error(429, 'RATE_LIMITED')
+                response.headers['Retry-After'] = str(retry)
+                response.headers.update({'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer',
+                                         'X-Content-Type-Options': 'nosniff'})
+                return response
             if request.url.query:
                 if request.method != 'GET' or request.url.path != '/api/v1/practice-attempts':
                     raise Failure(400, 'INVALID_REQUEST')

@@ -1,3 +1,4 @@
+import { rateLimitMessage } from './api-error';
 import { GitHubReferenceTransfer } from './GitHubReferenceTransfer';
 import { GitHubReferenceEditor } from './GitHubReferenceEditor';
 import React, { useEffect, useRef, useState } from 'react';
@@ -8,7 +9,7 @@ import type { CourseLabel, PracticeHistoryRow } from './practice-history';
 
 export function PracticeHistory({request,credentialId,temporary}:{request:PracticeRequest;credentialId:string;temporary:boolean}) {
   const [referenceVersion,setReferenceVersion]=useState(0);
-  const [recordId,setRecordId]=useState<string>(),[recordError,setRecordError]=useState(false);
+  const [recordId,setRecordId]=useState<string>(),[recordError,setRecordError]=useState('');
   const [rows,setRows]=useState<PracticeHistoryRow[]>(), [page,setPage]=useState<PracticeHistoryPage>();
   const [cursors,setCursors]=useState<(string|undefined)[]>([undefined]), [index,setIndex]=useState(0);
   const [loading,setLoading]=useState(true), [error,setError]=useState('');
@@ -28,24 +29,24 @@ export function PracticeHistory({request,credentialId,temporary}:{request:Practi
       await Promise.all(ids.map(async id=>{if(!assignments.current.has(id))assignments.current.set(id,await request<Assignment>(`/assignments/${id}`));}));
       const nextRows=buildPracticeHistoryRows(result.items,ids.map(id=>assignments.current.get(id)!),unitCourses,catalog);
       if(mounted.current){setRows(nextRows);setPage(result);setCursors(nextCursors);setIndex(nextIndex);}
-    }catch{if(mounted.current)setError('履歴を取得できませんでした。通信状態や学習キーの有効性を確認し、「最新の履歴を読み込む」を試してください。');}
+    }catch(error){if(mounted.current)setError(rateLimitMessage(error)??'履歴を取得できませんでした。通信状態や学習キーの有効性を確認し、「最新の履歴を読み込む」を試してください。');}
     finally{if(mounted.current)setLoading(false);}
   }
   async function loadRecord(){
     if(temporary)return;
-    setRecordError(false);
+    setRecordError('');
     try{
       const record=await request<{record_id:string}>('/records/me');
       if(!record.record_id)throw new Error('MISSING_RECORD');
       if(mounted.current)setRecordId(record.record_id);
-    }catch{if(mounted.current){setRecordId(undefined);setRecordError(true);}}
+    }catch(error){if(mounted.current){setRecordId(undefined);setRecordError(rateLimitMessage(error)??'学習記録を確認できないため、移行操作を利用できません。「最新の履歴を読み込む」で再試行してください。');}}
   }
   useEffect(()=>{mounted.current=true;void load([undefined],0);void loadRecord();return()=>{mounted.current=false;};},[]);
   return <section className="panel practice-history" aria-busy={loading}><div className="section-heading"><h2>全コースの実践記録</h2><button className="secondary" disabled={loading} onClick={()=>{void load([undefined],0);void loadRecord();}}>最新の履歴を読み込む</button></div>
     <p>本人が保存した自己確認を、新しい記録から10件ずつ表示します。実行結果の検証や講師評価ではありません。過去のチェック内容を振り返れます。</p>
     {!temporary&&<section aria-label="GitHub参照ファイルの移行"><h3>GitHub参照ファイルで端末間を移行する</h3>
       {recordId?<GitHubReferenceTransfer credentialId={credentialId} recordId={recordId} request={request} onImported={()=>setReferenceVersion(v=>v+1)}/>:
-        recordError?<p role="alert">学習記録を確認できないため、移行操作を利用できません。「最新の履歴を読み込む」で再試行してください。</p>:<p role="status">移行先の学習記録を確認しています。</p>}
+        recordError?<p role="alert">{recordError}</p>:<p role="status">移行先の学習記録を確認しています。</p>}
     </section>}
     {temporary&&<p>一時端末ではGitHub参照の入力・保存・読み込みを行いません。</p>}{loading&&<p role="status">履歴を読み込んでいます。</p>}{error&&<p role="alert">{error}</p>}
     {rows===undefined?!loading&&<p>履歴はまだ取得できていません。</p>:<><p>ページ {index+1} · このページの記録 {rows.length}件</p>{rows.length===0&&<p>{index===0?'実践記録はまだありません。「学習する」の実践課題で確認結果を記録すると、ここに表示されます。':'このページに表示できる実践記録はありません。最新の履歴から確認してください。'}</p>}

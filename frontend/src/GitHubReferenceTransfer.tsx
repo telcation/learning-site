@@ -1,3 +1,4 @@
+import { rateLimitMessage } from './api-error';
 import { useState } from 'react';
 import { referenceBatch } from './github-reference';
 import type { MergeResult } from './github-reference';
@@ -24,7 +25,7 @@ export function GitHubReferenceTransfer({credentialId,recordId,request,onImporte
       try{const a=document.createElement('a');a.href=url;a.download='learning-github-references.json';a.click();}
       finally{window.setTimeout(()=>URL.revokeObjectURL(url),1000);}
       setNotice(`${entries.length}件の参照の書出し操作を行いました。実際にファイルが保存されたことをご自身で確認してください。`);
-    }catch{setError('書き出せませんでした。通信・端末の保存領域・現在の学習キーを確認してください。対応上限は参照1,000件、実践履歴10,000件です。');}
+    }catch(error){setError(rateLimitMessage(error)??'書き出せませんでした。通信・端末の保存領域・現在の学習キーを確認してください。対応上限は参照1,000件、実践履歴10,000件です。');}
     finally{setBusy(false);}
   }
   async function inspect(file:File){
@@ -44,7 +45,7 @@ export function GitHubReferenceTransfer({credentialId,recordId,request,onImporte
         else counts.conflicts++;
       }
       setPending({file:parsed,counts});
-    }catch{setError('取り込めるファイルではありません。同じ学習コードで再開した記録用の参照ファイルか確認してください。別記録・不明な実践・不正形式は取り込まず、上限は512KiB・参照1,000件です。通信や保存領域の問題でも確認を中止します。');}
+    }catch(error){setError(rateLimitMessage(error)??'取り込めるファイルではありません。同じ学習コードで再開した記録用の参照ファイルか確認してください。別記録・不明な実践・不正形式は取り込まず、上限は512KiB・参照1,000件です。通信や保存領域の問題でも確認を中止します。');}
     finally{setBusy(false);}
   }
   async function importFile(){
@@ -56,7 +57,7 @@ export function GitHubReferenceTransfer({credentialId,recordId,request,onImporte
       const {merge}=await referenceBatch(credentialId,recordId,pending.file.entries.map(e=>e.practice_attempt_id),pending.file.entries);
       setNotice(`取込み完了：追加 ${merge.added}件、同一 ${merge.identical}件、競合のため端末側を維持 ${merge.conflicts}件。`);
       setPending(undefined);onImported();
-    }catch{setError('取込みの完了を確認できませんでした。履歴を開き直して確認してください。再取込みしても既存の参照は上書きしません。');}
+    }catch(error){setError(rateLimitMessage(error)??'取込みの完了を確認できませんでした。履歴を開き直して確認してください。再取込みしても既存の参照は上書きしません。');}
     finally{setBusy(false);}
   }
   return <details className="github-reference"><summary>書出し・取込みの操作を開く</summary>
@@ -71,6 +72,6 @@ export function GitHubReferenceTransfer({credentialId,recordId,request,onImporte
       <button className="primary" disabled={busy||!pending.file.entries.length} onClick={()=>void importFile()}>確認した参照をこの端末に取り込む</button>
       <button className="text-button" disabled={busy} onClick={()=>setPending(undefined)}>取込みをキャンセル</button>
     </section>}
-    {busy&&<p role="status">参照を確認・処理しています。</p>}{error&&<p role="alert">{error}</p>}{notice&&<p role="status">{notice}</p>}
+    {busy&&<p role="status">参照を確認・処理しています。履歴が多い場合は、アクセス制限の待ち時間を挟んで確認します。</p>}{error&&<p role="alert">{error}</p>}{notice&&<p role="status">{notice}</p>}
   </details>;
 }

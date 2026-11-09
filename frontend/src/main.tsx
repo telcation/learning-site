@@ -1,4 +1,4 @@
-import { ApiError, errorText, accessFailure } from './api-error';
+import { ApiError, errorText, accessFailure, parseRetryAfter } from './api-error';
 import { AccessErrorNotice } from './AccessErrorNotice';
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -67,7 +67,7 @@ async function api<T>(path:string, credential?:Credential, body?:unknown, reques
   const response = await fetch('/api/v1'+path, {method: body === undefined ? 'GET' : method,headers,body:body === undefined ? undefined : JSON.stringify(body),cache:'no-store',referrerPolicy:'no-referrer',signal:requests.signal});
   const value = response.status === 204 ? undefined : await response.json();
   if (ended || temporarySession && !temporarySession.check()) throw new Error('SESSION_ENDED');
-  if (!response.ok) throw new ApiError(value?.code || 'UNAVAILABLE', response.status);
+  if (!response.ok) throw new ApiError(value?.code || 'UNAVAILABLE', response.status, parseRetryAfter(response.headers.get('Retry-After')));
   return value as T;
 }
 async function learningSnapshot(c:Credential) {

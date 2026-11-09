@@ -1,3 +1,4 @@
+import { rateLimitMessage } from './api-error';
 import React, { useEffect, useState } from 'react';
 import { latestPractice } from './practice';
 import type { Assignment, AssignmentPage, PracticeAttempt, PracticeRequest, SelfCheck } from './practice';
@@ -15,7 +16,7 @@ export function PracticePanel({unitId,request,onSave,busy,onOpenHistory}:{unitId
         const a=await request<Assignment>(`/assignments/${page.items[0].assignment_version_id}`);
         const previous=await latestPractice(request,a.assignment_version_id);
         if(active){setAssignment(a);setLatest(previous);setChecks(Object.fromEntries(a.rubric_items.map(item=>[item.rubric_item_id,previous?.self_checks.find(check=>check.rubric_item_id===item.rubric_item_id)?.met??false])));}
-      }catch{if(active)setError('実践課題を読み込めませんでした。いったん学習ホームへ戻り、「学習する」を開き直して確認してください。');}
+      }catch(error){if(active)setError(rateLimitMessage(error)??'実践課題を読み込めませんでした。いったん学習ホームへ戻り、「学習する」を開き直して確認してください。');}
       finally{if(active)setLoading(false);}
     }
     void read();return()=>{active=false;};
@@ -24,7 +25,7 @@ export function PracticePanel({unitId,request,onSave,busy,onOpenHistory}:{unitId
     if(!assignment)return;
     setSaving(true);setError('');
     try{const result=await onSave(assignment.assignment_version_id,assignment.rubric_items.map(item=>({rubric_item_id:item.rubric_item_id,met:checks[item.rubric_item_id]??false})));setLatest(result);}
-    catch{setError('保存の完了を確認できませんでした。通信状態を確認し、いったん学習ホームへ戻って「学習する」を開き直し、前回の自己確認を確かめてください。');}
+    catch(error){setError(rateLimitMessage(error)??'保存の完了を確認できませんでした。通信状態を確認し、いったん学習ホームへ戻って「学習する」を開き直し、前回の自己確認を確かめてください。');}
     finally{setSaving(false);}
   }
   return <section className="panel practice-panel"><h2>実践課題を手元で確かめる（任意）</h2><p>自分のPCや手元のメモで取り組み、確認できた項目にチェックしてください。この課題は単元の修了条件には含みません。</p><p>ソースコード・実行結果・GitHubのURLを送る欄はありません。保存するのは各項目の確認結果だけで、サーバーが実行や正しさを検証した記録ではありません。</p>

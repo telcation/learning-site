@@ -1,6 +1,7 @@
 import { parseGitHubReference } from './github-reference.ts';
 import type { ReferenceEntry } from './github-reference.ts';
-import type { PracticeHistoryPage, PracticeRequest } from './practice.ts';
+import type { PracticeRequest } from './practice.ts';
+import { readPracticePage } from './practice.ts';
 
 export const MAX_REFERENCE_BYTES=512*1024;
 export const MAX_REFERENCE_ENTRIES=1000;
@@ -35,7 +36,7 @@ export function encodeReferenceFile(recordId:string,entries:ReferenceEntry[]):st
 export async function practiceIdsForTransfer(request:PracticeRequest):Promise<string[]> {
   const ids=new Set<string>(),cursors=new Set<string>();let cursor:string|undefined;
   for(let pageNo=0;pageNo<100;pageNo++){
-    const page=await request<PracticeHistoryPage>('/practice-attempts?limit=100'+(cursor?'&after_id='+encodeURIComponent(cursor):''));
+    const page=await readPracticePage(request,'/practice-attempts?limit=100'+(cursor?'&after_id='+encodeURIComponent(cursor):''));
     if(!Array.isArray(page.items)||page.items.length>100||typeof page.has_more!=='boolean')throw new Error('INCOMPLETE_HISTORY');
     for(const item of page.items){
       if(!uuid.test(item.practice_attempt_id)||ids.has(item.practice_attempt_id))throw new Error('INCOMPLETE_HISTORY');

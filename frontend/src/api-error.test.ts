@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ApiError, accessFailure, errorText } from './api-error.ts';
+import { ApiError, accessFailure, errorText, parseRetryAfter, rateLimitMessage } from './api-error.ts';
 
 test('expired record never recommends retrying its code as a recovery',()=>{
   const error=new ApiError('RECORD_EXPIRED',410);
@@ -28,4 +28,21 @@ test('revision, unmet requirements, invalid code and storage failures retain the
   assert.ok(errorText(new ApiError('REQUIREMENTS_UNMET',409)).includes('未達成'));
   assert.ok(errorText(new Error('INVALID_CODE')).includes('検査値'));
   assert.ok(errorText(new Error('STORAGE_UNAVAILABLE')).includes('保存を許可'));
+});
+
+test('rate limits show the validated wait without recommending credential recovery',()=>{
+  const error=new ApiError('RATE_LIMITED',429,parseRetryAfter('6'));
+  assert.equal(accessFailure(error),'none');
+  assert.ok(errorText(error).includes('6秒以上'));
+  assert.ok(errorText(error).includes('保存済みの結果を確認'));
+  assert.ok(errorText(error).includes('学習キーを消したり'));
+  assert.equal(rateLimitMessage(new ApiError('UNAUTHORIZED',401)),undefined);
+});
+test('invalid Retry-After values use a generic wait without reflecting header content',()=>{
+  for(const value of [null,'0','-1','1.5','infinity','86401','<private>','Wed, 21 Oct 2026 07:28:00 GMT']){
+    assert.equal(parseRetryAfter(value),undefined);
+    assert.ok(errorText(new ApiError('RATE_LIMITED',429,parseRetryAfter(value))).includes('少し待って'));
+  }
+  assert.equal(parseRetryAfter('1'),1);
+  assert.equal(parseRetryAfter('86400'),86400);
 });
