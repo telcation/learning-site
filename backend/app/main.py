@@ -59,9 +59,17 @@ def create_app(database_url=None, pepper=None):
             'CREATE TABLE IF NOT EXISTS app_metadata (name TEXT PRIMARY KEY, value TEXT NOT NULL)',
             'CREATE TABLE IF NOT EXISTS enrollments (record_id TEXT NOT NULL REFERENCES records(id), course_version_id TEXT NOT NULL, completed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(record_id,course_version_id))',
             'CREATE TABLE IF NOT EXISTS practice_attempts (id TEXT PRIMARY KEY, record_id TEXT NOT NULL REFERENCES records(id), assignment_version_id TEXT NOT NULL, sequence INTEGER NOT NULL, self_confirmed INTEGER NOT NULL, self_checks TEXT NOT NULL, revision INTEGER NOT NULL, UNIQUE(record_id,sequence))',
+            "CREATE TABLE IF NOT EXISTS learning_preferences (record_id TEXT PRIMARY KEY REFERENCES records(id), study_route TEXT NOT NULL CHECK(study_route IN ('practice','fe')), preferred_language TEXT CHECK(preferred_language IS NULL OR preferred_language IN ('java','python')), CHECK(study_route!='practice' OR preferred_language IS NOT NULL))",
         ]:
             c.exec_driver_sql(statement)
         c.exec_driver_sql('INSERT OR IGNORE INTO enrollments (record_id,course_version_id,completed) SELECT id,course_id,completed FROM records')
+        missing = c.execute(text('SELECT r.id,r.course_id FROM records r LEFT JOIN learning_preferences p ON p.record_id=r.id WHERE p.record_id IS NULL')).mappings().all()
+        for row in missing:
+            course = next((course for course in COURSES if course['id'] == row['course_id']), None)
+            if not course:
+                raise RuntimeError('INVALID_LOCAL_COURSE')
+            c.execute(text('INSERT INTO learning_preferences VALUES (:rid,:route,:language)'),
+                      {'rid': row['id'], 'route': 'practice' if course['language'] else 'fe', 'language': course['language']})
     db_path = make_url(url).database
     if not db_path or db_path == ':memory:':
         raise RuntimeError('P1_FILE_DATABASE_REQUIRED')
@@ -273,6 +281,8 @@ def create_app(database_url=None, pepper=None):
                               month=today().replace(day=1).isoformat(), expires=(today()+timedelta(days=30)).isoformat())
                 c.execute(text('INSERT INTO records (id,credential_id,secret_hmac,course_id,last_active_month,empty_expires_on) VALUES (:id,:cid,:digest,:course,:month,:expires)'), values)
                 c.execute(text('INSERT INTO enrollments (record_id,course_version_id) VALUES (:id,:course)'), values)
+                c.execute(text('INSERT INTO learning_preferences VALUES (:rid,:route,:language)'),
+                          {'rid': values['id'], 'route': b['study_route'], 'language': b['preferred_language']})
                 return me(c.execute(text('SELECT * FROM records WHERE id=:id'), values).mappings().one())
             return idempotent(c, request, action, 201)
 
@@ -319,6 +329,28 @@ def create_app(database_url=None, pepper=None):
                           {'rid': r['id'], 'cid': unit['course_version_id'], 'month': today().replace(day=1).isoformat(),
                            'expiry': (today()+timedelta(days=30)).isoformat()})
                 return dict(resource_id=unit['unit_version_id'], revision=r['revision']+1)
+            return idempotent(c, request, action)
+
+    @app.put('/api/v1/learning-preferences')
+    def preferences(request: Request):
+        b = body(request, ['study_route', 'preferred_language', 'revision'])
+        if (b['study_route'] not in ('practice', 'fe') or b['preferred_language'] not in ('java', 'python', None)
+                or b['study_route'] == 'practice' and b['preferred_language'] is None
+                or type(b['revision']) is not int or not 0 <= b['revision'] <= 2147483647):
+            raise Failure(400, 'INVALID_REQUEST')
+        with transaction() as c:
+            r = owner(c, request)
+            def action():
+                if r['revision'] != b['revision']:
+                    raise Failure(409, 'REVISION_CONFLICT')
+                previous = c.execute(text('SELECT * FROM learning_preferences WHERE record_id=:rid'), {'rid': r['id']}).mappings().one()
+                if previous['study_route'] == b['study_route'] and previous['preferred_language'] == b['preferred_language']:
+                    return dict(resource_id=r['id'], revision=r['revision'])
+                c.execute(text('UPDATE learning_preferences SET study_route=:route,preferred_language=:language WHERE record_id=:rid'),
+                          {'rid': r['id'], 'route': b['study_route'], 'language': b['preferred_language']})
+                c.execute(text('UPDATE records SET revision=revision+1,last_active_month=:month,empty_expires_on=CASE WHEN evidence=0 THEN :expiry ELSE NULL END WHERE id=:rid'),
+                          {'rid': r['id'], 'month': today().replace(day=1).isoformat(), 'expiry': (today()+timedelta(days=30)).isoformat()})
+                return dict(resource_id=r['id'], revision=r['revision']+1)
             return idempotent(c, request, action)
 
     @app.post('/api/v1/credentials/rotate')
@@ -370,12 +402,12 @@ def create_app(database_url=None, pepper=None):
             r = owner(c, request)
             unit = unit_for(r)
             answers = latest(c, r['id'])
-            course = next(x for x in COURSES if x['id'] == r['course_id'])
+            preference = c.execute(text('SELECT * FROM learning_preferences WHERE record_id=:rid'), {'rid': r['id']}).mappings().one()
             pending = sum(answers.get(q) is False for q in unit['question_ids'])
             done = completed(c, r, r['course_id'])
             enrolled = list(c.execute(text('SELECT course_version_id FROM enrollments WHERE record_id=:rid ORDER BY course_version_id'), {'rid': r['id']}).scalars())
-            return dict(revision=r['revision'], study_route='practice' if course['language'] else 'fe',
-                        preferred_language=course['language'], enrolled_course_version_ids=enrolled,
+            return dict(revision=r['revision'], study_route=preference['study_route'],
+                        preferred_language=preference['preferred_language'], enrolled_course_version_ids=enrolled,
                         review_pending_count=pending, retention_kind='learning' if r['evidence'] else 'empty',
                         empty_expires_on=r['empty_expires_on'], next_action=dict(
                             kind='course_complete' if done else ('review' if pending else 'learn'),

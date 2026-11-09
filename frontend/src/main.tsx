@@ -3,6 +3,9 @@ import { createRoot } from 'react-dom/client';
 import { bearer, createCredential, exportCode, importCode, readCredential, saveCredential as savePersonalCredential, forgetCredential } from './credential';
 import type { Credential } from './credential';
 import './style.css';
+import { LearningPreferences } from './LearningPreferences';
+import { prioritizeCourses } from './learning-preferences';
+import type { LearningPreference } from './learning-preferences';
 import { PracticeHistory } from './PracticeHistory';
 import { ObjectivePanel } from './ObjectivePanel';
 import { buildObjectiveRows } from './objectives';
@@ -48,7 +51,7 @@ async function saveCredential(c: Credential) {
 
 
 type Course = {id:string;course_id:string;title:string;language:'java'|'python'|null;version:number;available:boolean};
-type Home = {revision:number;review_pending_count:number;enrolled_course_version_ids:string[];retention_kind:string;empty_expires_on:string|null;next_action:{kind:string;unit_version_id:string;course_version_id:string}};
+type Home = LearningPreference & {revision:number;review_pending_count:number;enrolled_course_version_ids:string[];retention_kind:string;empty_expires_on:string|null;next_action:{kind:string;unit_version_id:string;course_version_id:string}};
 type Material = {title:string;markdown:string;revision:number};
 type Question = AnswerQuestion;
 type Progress = UnitProgress & {objectives:ObjectiveProgress[]};
@@ -174,6 +177,14 @@ function App() {
     if(!temporary && navigator.storage?.persist){try{setStorage(await navigator.storage.persist()?'永続保存が許可済み':'ブラウザーによる通常保存');}catch{setStorage('保存の持続性は不明');}}
     await api('/records',c,{course_version_id:course.id,study_route:course.language?'practice':'fe',preferred_language:course.language});await load(c);
   });}
+  async function savePreferences(value:LearningPreference) {
+    if(!credential||!home)return;
+    await perform(async()=>{
+      try{await api('/learning-preferences',credential,{...value,revision:home.revision},undefined,'PUT');}
+      catch(e){if(e instanceof ApiError&&e.code==='REVISION_CONFLICT'){await load(credential);setError('別の操作で記録が更新されたため、最新の設定を読み込みました。好みを選び直して保存してください。');return;}throw e;}
+      await load(credential);setNotice('学習の好みを保存しました。コース一覧の表示順に反映しています。');
+    });
+  }
   async function switchCourse(course:Course) {
     if(!credential||!home)return;
     await perform(async()=>{
@@ -234,7 +245,7 @@ function App() {
       const q=await api<Question>(`/questions/${id}`,credential);setQuestion(q);setChoice(initialAnswer(q));setResult(undefined);
     });
   }  const selected=catalog.find(c=>c.id===home?.next_action.course_version_id);
-  const courseOptions=home?catalog.filter(course=>home.enrolled_course_version_ids.includes(course.id)||course.available&&!home.enrolled_course_version_ids.some(id=>catalog.find(c=>c.id===id)?.course_id===course.course_id)):[];
+  const courseOptions=home?prioritizeCourses(catalog.filter(course=>home.enrolled_course_version_ids.includes(course.id)||course.available&&!home.enrolled_course_version_ids.some(id=>catalog.find(c=>c.id===id)?.course_id===course.course_id)),home):[];
   const nextPending=question?nextPendingQuestion(studyQuestions,question.question_version_id):undefined;
   const complete=progress?.state==='completed';
   const percent=progress?Math.round(progress.correct_count/progress.question_count*100):0;
@@ -256,6 +267,7 @@ function App() {
       {home&&screen==='progress'&&summary&&<ProgressOverview summary={summary} catalog={catalog} current={home.next_action.course_version_id} busy={busy} onRefresh={()=>{if(credential)void perform(()=>load(credential));}} onSelect={id=>{const course=catalog.find(c=>c.id===id);if(course)void switchCourse(course);}}/>}
       {home&&screen==='progress'&&<section className="panel"><div className="section-heading"><h2>{selected?.title}</h2><span className="tag">教材 第{material?.revision}版</span></div><div className="progress-row"><div><strong>{material?.title}</strong><p>{complete?'修了済み':progress&&progress.state!=='not_started'?'学習中':'これから学習'} · 確認問題 {progress?.correct_count} / {progress?.question_count} 問正解</p></div><span className={complete?'status done':'status'}>{complete?'✓ 修了':progress?.state==='not_started'?'未着手':'学習中'}</span></div><div className="track"><div style={{width:`${percent}%`}}/></div><p className="muted">この入門単元は必須の{progress?.question_count}問すべてに正解すると修了できます。修了後の復習で間違えても修了記録は保持されます。</p></section>}
       {home&&screen==='progress'&&<ObjectivePanel rows={goalRows} busy={busy} onReview={goal=>void reviewGoal(goal)}/>}
+      {home&&screen==='home'&&<LearningPreferences value={home} busy={busy} onSave={value=>void savePreferences(value)}/>}
       {home&&screen==='home'&&<section className="panel course-switch"><h2>コースを追加・切り替える</h2><p>同じ学習キーで複数のコースを学べます。切り替えても、各コースの回答・修了記録は残ります。</p><div className="course-grid">{courseOptions.map(course=>{const current=course.id===home.next_action.course_version_id;const enrolled=home.enrolled_course_version_ids.includes(course.id);const courseProgress=summary?.courses.find(item=>item.course_version_id===course.id);return <article key={course.id}><h3>{course.title}</h3><p>教材 第{course.version}版 · {current?'現在のコース':enrolled?'登録済み':'未登録'}</p>{courseProgress&&<p>正答 {courseProgress.correct_count} / {courseProgress.question_count}問 · {courseProgress.completed?'修了済み':courseProgress.started?'学習中':'未着手'}<br/>直近が誤答 {courseProgress.review_pending_count}問</p>}<button className="secondary" disabled={busy||current} onClick={()=>void switchCourse(course)}>{current?'このコースを学習中':enrolled?'このコースへ切り替える':'追加してこのコースを学ぶ'}</button></article>;})}</div></section>}
       {screen==='home'&&<section className="roadmap panel"><div className="section-heading"><h2>ここから広がる、学びの道筋</h2><span>プログラミング実践ルート</span></div><div className="milestones">{['制御構造','OOP','デスクトップ','LAN内通信','Webアプリ'].map((s,i)=><div key={s} className={i===0?'current':''}><span>{String(i+1).padStart(2,'0')}</span><strong>{s}</strong><small>{i===0?'入門単元を試せます':'教材は順次開発'}</small></div>)}</div></section>}
       <footer><span>◇ 氏名・メールアドレス・GitHub情報を送信しない設計</span><span>開発版：試験範囲の一部のみ。合格・全範囲の網羅は保証しません。</span></footer>
@@ -306,6 +318,7 @@ if (temporary) {
   window.addEventListener('pageshow', event => { if (event.persisted) window.location.reload(); });
 }
 root.render(<App/>);
+
 
 
 

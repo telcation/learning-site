@@ -3,10 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "scripts": {"dev": "vite --host 127.0.0.1", "build": "tsc --noEmit && vite build", "test": "node --experimental-strip-types --test src/credential.test.ts src/recovery.test.ts src/answer.test.ts src/progress-summary.test.ts src/question-navigation.test.ts src/practice.test.ts src/objectives.test.ts src/practice-history.test.ts"},
+  "scripts": {"dev": "vite --host 127.0.0.1", "build": "tsc --noEmit && vite build", "test": "node --experimental-strip-types --test src/credential.test.ts src/recovery.test.ts src/answer.test.ts src/progress-summary.test.ts src/question-navigation.test.ts src/practice.test.ts src/objectives.test.ts src/practice-history.test.ts src/learning-preferences.test.ts"},
   "dependencies": {"react": "^19.2.0", "react-dom": "^19.2.0"},
   "devDependencies": {"@types/react": "^19.2.0", "@types/react-dom": "^19.2.0", "typescript": "^5.9.3", "vite": "^8.0.0"}
 }
+
 
 
 

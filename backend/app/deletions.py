@@ -61,4 +61,5 @@ def purge_record(c, record_id):
     c.execute(text('DELETE FROM practice_attempts WHERE record_id=:id'), {'id': record_id})
     c.execute(text('DELETE FROM revoked_credentials WHERE record_id=:id'), {'id': record_id})
     c.execute(text('DELETE FROM enrollments WHERE record_id=:id'), {'id': record_id})
+    c.execute(text('DELETE FROM learning_preferences WHERE record_id=:id'), {'id': record_id})
     c.execute(text('DELETE FROM records WHERE id=:id'), {'id': record_id})
