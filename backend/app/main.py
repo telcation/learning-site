@@ -434,9 +434,12 @@ def create_app(database_url=None, pepper=None):
             pending = sum(answers.get(q) is False for q in unit['question_ids'])
             done = completed(c, r, r['course_id'])
             enrolled = list(c.execute(text('SELECT course_version_id FROM enrollments WHERE record_id=:rid ORDER BY course_version_id'), {'rid': r['id']}).scalars())
+            retention_kind, retention_deadline, _ = retention_status(c, r, today())
             return dict(revision=r['revision'], study_route=preference['study_route'],
                         preferred_language=preference['preferred_language'], enrolled_course_version_ids=enrolled,
-                        review_pending_count=pending, retention_kind='learning' if r['evidence'] else 'empty',
+                        review_pending_count=pending, retention_kind=retention_kind,
+                        retention_expires_on=retention_deadline.isoformat(),
+                        last_active_month=r['last_active_month'] if retention_kind == 'learning' else None,
                         empty_expires_on=r['empty_expires_on'], next_action=dict(
                             kind='course_complete' if done else ('review' if pending else 'learn'),
                             unit_version_id=unit['unit_version_id'], assignment_version_id=None, course_version_id=r['course_id'],
