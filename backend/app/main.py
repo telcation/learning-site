@@ -17,6 +17,7 @@ from .content import COURSES, UNITS, QUESTIONS, ASSIGNMENTS, OBJECTIVES, QUESTIO
 from .objectives import objective_progress, select_goal_question
 from .security import parse_token, digest, UUID_PATTERN
 from .deletions import DeletionLedger, purge_record
+from .credential_ledger import prepare_credential_ledger
 from .retention import retention_status
 import re
 
@@ -85,9 +86,12 @@ def create_app(database_url=None, pepper=None):
         for record_id in ledger.records():
             purge_record(c, record_id)
         c.commit()
+    credential_ledger = prepare_credential_ledger(engine, db_path, ledger.records())
+    ledger.credential_ledger = credential_ledger
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.state.engine = engine
     app.state.ledger = ledger
+    app.state.credential_ledger = credential_ledger
 
     def error(status, code):
         return JSONResponse({'code': code, 'request_id': str(uuid4())}, status_code=status)
@@ -175,6 +179,11 @@ def create_app(database_url=None, pepper=None):
             raise Failure(401, 'UNAUTHORIZED')
         if ledger.contains(record['id']):
             raise Failure(401, 'UNAUTHORIZED')
+        head = credential_ledger.head(record['id'])
+        if head is None:
+            raise RuntimeError('CREDENTIAL_LEDGER_REQUIRED')
+        if credential_ledger.is_revoked(cid) or head and (head['credential_id'] != cid or head['secret_hmac'] != record['secret_hmac']):
+            raise Failure(401, 'UNAUTHORIZED')
         if retention_status(c, record, today())[2]:
             raise Failure(410, 'RECORD_EXPIRED')
         return record
@@ -233,6 +242,7 @@ def create_app(database_url=None, pepper=None):
     @app.get('/api/v1/health')
     def health():
         ledger.check()
+        credential_ledger.check()
         with engine.connect() as c:
             c.exec_driver_sql('SELECT 1')
         return {'status': 'ok'}
@@ -269,6 +279,16 @@ def create_app(database_url=None, pepper=None):
             raise Failure(400, 'INVALID_REQUEST')
         cid, secret = token(request)
         with transaction() as c:
+            if credential_ledger.is_revoked(cid):
+                raise Failure(401, 'UNAUTHORIZED')
+            existing = c.execute(text('SELECT * FROM records WHERE credential_id=:cid'), {'cid': cid}).mappings().first()
+            if credential_ledger.used(cid) and existing is None:
+                raise Failure(401, 'UNAUTHORIZED')
+            if existing:
+                head = credential_ledger.head(existing['id'])
+                if (not hmac.compare_digest(existing['secret_hmac'], digest(pepper, cid, secret))
+                        or head and (head['credential_id'] != cid or head['secret_hmac'] != existing['secret_hmac'])):
+                    raise Failure(401, 'UNAUTHORIZED')
             if c.execute(text('SELECT 1 FROM revoked_credentials WHERE credential_id=:cid'), {'cid': cid}).first():
                 raise Failure(401, 'UNAUTHORIZED')
             existing_id = c.execute(text('SELECT id FROM records WHERE credential_id=:cid'), {'cid': cid}).scalar_one_or_none()
@@ -284,7 +304,12 @@ def create_app(database_url=None, pepper=None):
                 c.execute(text('INSERT INTO learning_preferences VALUES (:rid,:route,:language)'),
                           {'rid': values['id'], 'route': b['study_route'], 'language': b['preferred_language']})
                 return me(c.execute(text('SELECT * FROM records WHERE id=:id'), values).mappings().one())
-            return idempotent(c, request, action, 201)
+            response = idempotent(c, request, action, 201)
+            created = dict(c.execute(text('SELECT * FROM records WHERE credential_id=:cid'), {'cid': cid}).mappings().one())
+        # Acknowledge creation only after the independent credential state is
+        # saved. Same-request retries can finish this step without a new record.
+        credential_ledger.register(created)
+        return response
 
     @app.get('/api/v1/records/me')
     def get_me(request: Request):
@@ -370,11 +395,14 @@ def create_app(database_url=None, pepper=None):
                 if r['revision'] != b['revision']:
                     raise Failure(409, 'REVISION_CONFLICT')
                 if (c.execute(text('SELECT 1 FROM records WHERE credential_id=:cid'), {'cid': cid}).first()
-                        or c.execute(text('SELECT 1 FROM revoked_credentials WHERE credential_id=:cid'), {'cid': cid}).first()):
+                        or c.execute(text('SELECT 1 FROM revoked_credentials WHERE credential_id=:cid'), {'cid': cid}).first()
+                        or credential_ledger.used(cid)):
                     raise Failure(409, 'REVISION_CONFLICT')
+                replacement_hmac = digest(pepper, cid, secret)
+                credential_ledger.rotate(r['id'], r['credential_id'], cid, replacement_hmac, r['revision']+1)
                 c.execute(text('INSERT INTO revoked_credentials VALUES (:cid,:rid)'), {'cid': r['credential_id'], 'rid': r['id']})
                 c.execute(text('UPDATE records SET credential_id=:cid,secret_hmac=:digest,revision=revision+1 WHERE id=:rid'),
-                          {'cid': cid, 'digest': digest(pepper, cid, secret), 'rid': r['id']})
+                          {'cid': cid, 'digest': replacement_hmac, 'rid': r['id']})
                 # Remove old response caches so old bootstrap requests cannot recover record data.
                 c.execute(text('DELETE FROM idempotency WHERE credential_id=:cid'), {'cid': r['credential_id']})
                 return dict(resource_id=r['id'], revision=r['revision']+1)

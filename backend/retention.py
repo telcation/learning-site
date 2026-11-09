@@ -11,6 +11,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.pool import NullPool
 
 from app.deletions import DeletionLedger
+from app.credential_ledger import CredentialLedger
 from app.main import today
 from app.retention import maintain_retention
 
@@ -32,7 +33,9 @@ def main(argv=None):
                                poolclass=NullPool, hide_parameters=True)
         with engine.connect() as c:
             expected_id = c.execute(text("SELECT value FROM app_metadata WHERE name='deletion_ledger_id'")).scalar_one()
+            credential_id = c.execute(text("SELECT value FROM app_metadata WHERE name='credential_ledger_id'")).scalar_one()
         ledger = DeletionLedger(str(path) + '.deletions', expected_id)
+        ledger.credential_ledger = CredentialLedger(str(path) + '.credentials', credential_id)
         counts = maintain_retention(engine, ledger, today(), args.apply)
         print(json.dumps(dict(mode='apply' if args.apply else 'preview', **counts)))
         return 0

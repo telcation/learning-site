@@ -9,6 +9,7 @@ from sqlalchemy.pool import NullPool
 
 class DeletionLedger:
     def __init__(self, path, expected_id=None):
+        self.credential_ledger = None
         self.path = Path(path)
         existed = self.path.exists()
         if expected_id and not existed:
@@ -46,6 +47,8 @@ class DeletionLedger:
             c.exec_driver_sql('PRAGMA synchronous=FULL')
             c.execute(text('INSERT OR IGNORE INTO deletion_tombstones VALUES (:id,:expiry)'),
                       {'id': record_id, 'expiry': (datetime.now(timezone.utc)+timedelta(days=35)).isoformat()})
+        if self.credential_ledger is not None:
+            self.credential_ledger.forget(record_id)
 
     def records(self):
         with self.engine.connect() as c:
