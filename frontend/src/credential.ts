@@ -34,7 +34,7 @@ export async function importCode(input: string) {
   return fromSecret(bytes);
 }
 export const bearer = (c: Credential) => `Bearer ${c.id}.${c.secret}`;
-function database(): Promise<IDBDatabase> {
+export function deviceDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open('learning-personal-v1', 1);
     request.onupgradeneeded = () => request.result.createObjectStore('device');
@@ -44,12 +44,12 @@ function database(): Promise<IDBDatabase> {
   });
 }
 export async function readCredential(): Promise<Credential | undefined> {
-  const db = await database();
+  const db = await deviceDatabase();
   try { return await new Promise((resolve, reject) => { const tx = db.transaction('device', 'readonly'); const req = tx.objectStore('device').get('owner'); req.onsuccess = () => resolve(req.result); req.onerror = () => reject(new Error('STORAGE_UNAVAILABLE')); }); }
   finally { db.close(); }
 }
 export async function saveCredential(c: Credential) {
-  const db = await database();
+  const db = await deviceDatabase();
   try { await new Promise<void>((resolve, reject) => { const tx = db.transaction('device', 'readwrite'); tx.objectStore('device').put(c, 'owner'); tx.oncomplete = () => resolve(); tx.onerror = () => reject(new Error('STORAGE_UNAVAILABLE')); tx.onabort = () => reject(new Error('STORAGE_UNAVAILABLE')); }); }
   finally { db.close(); }
   const readback = await readCredential();
@@ -57,7 +57,7 @@ export async function saveCredential(c: Credential) {
 }
 
 export async function forgetCredential() {
-  const db = await database();
+  const db = await deviceDatabase();
   try {
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction('device', 'readwrite');
