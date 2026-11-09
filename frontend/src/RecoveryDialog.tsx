@@ -1,3 +1,4 @@
+import { errorText } from './api-error';
 import React, { useState } from 'react';
 import type { Credential } from './credential';
 import { encryptRecovery, decryptRecovery, MAX_RECOVERY_BYTES } from './recovery';
@@ -28,15 +29,15 @@ export function RecoveryDialog({mode, credential, onClose, onRestore, onExported
         const restored=await decryptRecovery(await file.text(),password,window.location.origin);
         stage='server';await onRestore(restored);onClose();
       }
-    } catch {
+    } catch (error) {
       setMessage(stage==='crypto' ? '処理できませんでした。パスワード、ファイルの内容、保存元のサイトを確認してください。' :
-        stage==='server' ? '復旧先を確認・保存できませんでした。通信状態や、キーの失効・記録の期限・削除の有無を確認してください。' :
+        stage==='server' ? errorText(error) :
         '書き出し後の端末状態を保存できませんでした。ダウンロード先にファイルがあるか確認してください。');
     } finally {setPassword('');setConfirmation('');setBusy(false);}
   }
   return <div className="overlay"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="recovery-title">
     <h2 id="recovery-title">{exporting?'暗号化復旧ファイルを保存する':'暗号化復旧ファイルから再開する'}</h2>
-    <p>学習キーだけをパスワードで暗号化したファイルです。学習履歴のコピーやGitHub情報は含みません。同じHTTPSサイトで使用します。キー更新後の旧ファイルや、削除済み記録の復旧には使えません。</p>
+    <p>学習キーだけをパスワードで暗号化したファイルです。学習履歴のコピーやGitHub情報は含みません。同じHTTPSサイトで使用します。キー更新後の旧ファイルや、期限切れ・削除済み記録の復旧には使えません。</p>
     <p>パスワードとファイルはサーバーへ送りません。パスワードを忘れると、このファイルは開けません。ファイルとパスワードは別々に保管してください。</p>
     {!exporting&&<label className="recovery-field">保存した復旧ファイル<input type="file" accept=".json,application/json" disabled={busy} onChange={e=>setFile(e.target.files?.[0])}/></label>}
     <label className="recovery-field">{exporting?'このファイル用のパスワード（12文字以上）':'ファイルを保存したときのパスワード'}<input type="password" autoComplete={exporting?'new-password':'off'} value={password} disabled={busy} onChange={e=>setPassword(e.target.value)}/></label>
