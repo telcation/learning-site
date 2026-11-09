@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { localReference, parseGitHubReference } from './github-reference.ts';
+import { localReference, parseGitHubReference, referenceBatch } from './github-reference.ts';
 import { forgetCredential } from './credential.ts';
 
 const record='11111111-1111-4111-8111-111111111111';
@@ -83,5 +83,42 @@ test('failed transaction is not acknowledged and cannot change stored reference'
     await assert.rejects(localReference('key-1','bad-id',attempt,'save',value));
     await assert.rejects(localReference('key-1',record,attempt,'save',{repository:'https://example.com/o/r',sha}));
     assert.equal(mock.options.opens,opens);
+  }finally{if(original)Object.defineProperty(globalThis,'indexedDB',original);else delete (globalThis as any).indexedDB;}
+});
+
+test('batch import adds missing entries and preserves identical and conflicting local values',async()=>{
+  const mock=storageDouble();const original=Object.getOwnPropertyDescriptor(globalThis,'indexedDB');
+  Object.defineProperty(globalThis,'indexedDB',{configurable:true,value:mock.api});
+  try{
+    const value={repository:'https://github.com/o/local',sha};
+    await localReference('key-1',record,attempt,'save',value);
+    const proposed=[{practice_attempt_id:attempt,repository:'https://github.com/o/imported',sha:''},
+      {practice_attempt_id:other,repository:'https://github.com/o/new',sha:''}];
+    const first=await referenceBatch('key-1',record,[attempt,other],proposed);
+    assert.deepEqual(first.merge,{added:1,identical:0,conflicts:1});
+    assert.deepEqual(await localReference('key-1',record,attempt,'read'),value);
+    const again=await referenceBatch('key-1',record,[attempt,other],proposed);
+    assert.deepEqual(again.merge,{added:0,identical:1,conflicts:1});
+    const snapshot=await referenceBatch('key-1',record,[attempt,other]);
+    assert.equal(snapshot.entries.length,2);
+    assert.equal((await referenceBatch('key-1',other,[attempt,other])).entries.length,0);
+    // Current state, rather than the preview, decides conflicts at commit.
+    await localReference('key-1',record,other,'save',value);
+    assert.equal((await referenceBatch('key-1',record,[attempt,other],proposed)).merge.conflicts,2);
+  }finally{if(original)Object.defineProperty(globalThis,'indexedDB',original);else delete (globalThis as any).indexedDB;}
+});
+test('batch write abort rolls back every entry and forgotten or changed owners cannot import',async()=>{
+  const mock=storageDouble();const original=Object.getOwnPropertyDescriptor(globalThis,'indexedDB');
+  Object.defineProperty(globalThis,'indexedDB',{configurable:true,value:mock.api});
+  try{
+    const entries=[attempt,other].map(practice_attempt_id=>({practice_attempt_id,repository:'https://github.com/o/r',sha:''}));
+    mock.options.abortWrites=true;
+    await assert.rejects(referenceBatch('key-1',record,[attempt,other],entries));
+    assert.equal((await referenceBatch('key-1',record,[attempt,other])).entries.length,0);
+    mock.options.abortWrites=false;mock.setOwner('key-2');
+    await assert.rejects(referenceBatch('key-1',record,[attempt,other],entries));
+    await forgetCredential();
+    await assert.rejects(referenceBatch('key-2',record,[attempt,other],entries));
+    assert.equal(mock.entries().size,0);
   }finally{if(original)Object.defineProperty(globalThis,'indexedDB',original);else delete (globalThis as any).indexedDB;}
 });
