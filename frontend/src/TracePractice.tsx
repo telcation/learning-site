@@ -1,9 +1,14 @@
 import { useState } from 'react';
 
+const conditions = [
+  { label: '奇数', divisor: 2, remainder: 1 },
+  { label: '偶数', divisor: 2, remainder: 0 },
+  { label: '3の倍数', divisor: 3, remainder: 0 },
+];
 const exercises = [
-  { label: '1〜3の奇数を足す（教材）', limit: 3, remainder: 1 },
-  { label: '1〜5の奇数を足す', limit: 5, remainder: 1 },
-  { label: '1〜5の偶数を足す', limit: 5, remainder: 0 },
+  { label: '1〜3の奇数を足す（教材）', limit: 3, conditionIndex: 0 },
+  { label: '1〜5の奇数を足す', limit: 5, conditionIndex: 0 },
+  { label: '1〜5の偶数を足す', limit: 5, conditionIndex: 1 },
 ];
 const customIndex = exercises.length;
 const bounds = Array.from({ length: 10 }, (_, index) => index + 1);
@@ -14,7 +19,7 @@ export function TracePractice() {
   const [customLimit, setCustomLimit] = useState(5);
   const [customStart, setCustomStart] = useState(1);
   const [customStep, setCustomStep] = useState(1);
-  const [customRemainder, setCustomRemainder] = useState(1);
+  const [customConditionIndex, setCustomConditionIndex] = useState(0);
   const [prediction, setPrediction] = useState('');
   const [feedback, setFeedback] = useState('');
   const custom = exerciseIndex === customIndex;
@@ -22,14 +27,16 @@ export function TracePractice() {
   const step = custom ? customStep : 1;
   const exercise = custom ? {
     limit: customLimit,
-    remainder: customRemainder,
+    conditionIndex: customConditionIndex,
   } : exercises[exerciseIndex];
+  const { divisor, remainder } = conditions[exercise.conditionIndex];
+  const conditionLine = `    if (n mod ${divisor} = ${remainder})`;
   let total = 0;
   const iterations = Math.floor((exercise.limit - start) / step) + 1;
   const rows = Array.from({ length: iterations }, (_, index) => {
     const n = start + index * step;
     const before = total;
-    const condition = n % 2 === exercise.remainder;
+    const condition = n % divisor === remainder;
     if (condition) total += n;
     return { n, before, condition, after: total };
   });
@@ -101,21 +108,18 @@ export function TracePractice() {
         </select>
       </label>{' '}
       <label>足す値{' '}
-        <select value={customRemainder} onChange={event => {
-          setCustomRemainder(Number(event.target.value));
+        <select value={customConditionIndex} onChange={event => {
+          setCustomConditionIndex(Number(event.target.value));
           resetTrace();
         }}>
-          <option value={1}>奇数</option>
-          <option value={0}>偶数</option>
+          {conditions.map((condition, index) => <option key={condition.label} value={index}>{condition.label}</option>)}
         </select>
       </label>
     </fieldset>}
     <p>選択した条件の疑似言語</p>
     <pre><code>{'total ← 0\n'}
       {`for (n を ${start} から ${exercise.limit} まで ${step} ずつ増やす)\n`}
-      {revealedRow
-        ? <mark>{`    if (n mod 2 = ${exercise.remainder})`}</mark>
-        : `    if (n mod 2 = ${exercise.remainder})`}
+      {revealedRow ? <mark>{conditionLine}</mark> : conditionLine}
       {'\n'}
       {revealedRow?.condition
         ? <mark>{'        total ← total + n'}</mark>
@@ -143,7 +147,7 @@ export function TracePractice() {
     </div>}
     {revealedRow && <p>
       <strong>nが{revealedRow.n}の回</strong>{' '}
-      <code>{revealedRow.n} mod 2 = {revealedRow.n % 2}</code> なので、
+      <code>{revealedRow.n} mod {divisor} = {revealedRow.n % divisor}</code> なので、
       {revealedRow.condition
         ? `条件は真です。totalに${revealedRow.n}を足し、${revealedRow.before} + ${revealedRow.n} = ${revealedRow.after}になります。`
         : `条件は偽です。加算を飛ばすため、totalは${revealedRow.before}のままです。`}
