@@ -24,7 +24,7 @@ export function TracePractice() {
   const [prediction, setPrediction] = useState('');
   const [conditionPrediction, setConditionPrediction] = useState('');
   const [feedback, setFeedback] = useState('');
-  const [answers, setAnswers] = useState<{ text: string; incorrect: boolean }[]>([]);
+  const [answers, setAnswers] = useState<{ text: string; attempted: number; correct: number }[]>([]);
   const custom = exerciseIndex === customIndex;
   const start = custom ? customStart : 1;
   const step = custom ? customStep : 1;
@@ -48,7 +48,9 @@ export function TracePractice() {
     return { n, before, condition, after: total };
   });
   const finished = visibleRows === rows.length;
-  const firstIncorrect = answers.findIndex(answer => answer.incorrect);
+  const firstIncorrect = answers.findIndex(answer => answer.correct < answer.attempted);
+  const attemptedCount = answers.reduce((count, answer) => count + answer.attempted, 0);
+  const correctCount = answers.reduce((count, answer) => count + answer.correct, 0);
   const skippedValues = rows.filter(row => !row.condition).map(row => row.n).join('、');
   const revealedRow = visibleRows > 0 ? rows[visibleRows - 1] : undefined;
   const invalidPrediction = prediction.trim() !== '' && !/^[0-9]+$/.test(prediction.trim());
@@ -86,9 +88,9 @@ export function TracePractice() {
     if (value !== '') {
       submitted.push(`total ${value}（${Number(value) === answer ? '正解' : '誤り'}）`);
     }
-    const incorrect = (conditionPrediction !== '' && conditionPrediction !== conditionAnswer)
-      || (value !== '' && Number(value) !== answer);
-    setAnswers(previous => [...previous, { text: submitted.join('、'), incorrect }]);
+    const correct = Number(conditionPrediction === conditionAnswer)
+      + Number(value !== '' && Number(value) === answer);
+    setAnswers(previous => [...previous, { text: submitted.join('、'), attempted: submitted.length, correct }]);
     setPrediction('');
     setConditionPrediction('');
     setVisibleRows(visibleRows + 1);
@@ -176,6 +178,9 @@ export function TracePractice() {
       revealedRow ? `nが${revealedRow.n}の行を表示しました。` : ''}</p>
     {finished && <div className="callout">
       <strong>繰り返しの振り返り</strong>
+      <p>{attemptedCount > 0
+        ? `入力した予想 ${attemptedCount}件のうち、正解は ${correctCount}件です。`
+        : '予想の入力はありませんでした。'}</p>
       <p>{total > 0
         ? <>足した値の合計は <code>{rows.filter(row => row.condition).map(row => row.n).join(' + ')} = {total}</code> です。</>
         : '条件を満たす値がないため、totalは初期値の0のままです。'}</p>
