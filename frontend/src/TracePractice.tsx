@@ -5,13 +5,21 @@ const exercises = [
   { label: '1〜5の奇数を足す', limit: 5, remainder: 1 },
   { label: '1〜5の偶数を足す', limit: 5, remainder: 0 },
 ];
+const customIndex = exercises.length;
 
 export function TracePractice() {
   const [visibleRows, setVisibleRows] = useState(0);
   const [exerciseIndex, setExerciseIndex] = useState(0);
+  const [customLimit, setCustomLimit] = useState(5);
+  const [customRemainder, setCustomRemainder] = useState(1);
   const [prediction, setPrediction] = useState('');
   const [feedback, setFeedback] = useState('');
-  const exercise = exercises[exerciseIndex];
+  const custom = exerciseIndex === customIndex;
+  const exercise = custom ? {
+    label: `1〜${customLimit}の${customRemainder === 1 ? '奇数' : '偶数'}を足す`,
+    limit: customLimit,
+    remainder: customRemainder,
+  } : exercises[exerciseIndex];
   let total = 0;
   const rows = Array.from({ length: exercise.limit }, (_, index) => {
     const n = index + 1;
@@ -21,6 +29,7 @@ export function TracePractice() {
     return { n, before, condition, after: total };
   });
   const finished = visibleRows === rows.length;
+  const skippedValues = rows.filter(row => !row.condition).map(row => row.n).join('、');
   const revealedRow = visibleRows > 0 ? rows[visibleRows - 1] : undefined;
   const invalidPrediction = prediction.trim() !== '' && !/^[0-9]+$/.test(prediction.trim());
 
@@ -54,8 +63,30 @@ export function TracePractice() {
         resetTrace();
       }}>
         {exercises.map((item, index) => <option key={item.label} value={index}>{item.label}</option>)}
+        <option value={customIndex}>自分で条件を選ぶ</option>
       </select>
     </label></p>
+    {custom && <fieldset>
+      <legend>繰り返しと加算の条件</legend>
+      <label>繰り返しの終点{' '}
+        <select value={customLimit} onChange={event => {
+          setCustomLimit(Number(event.target.value));
+          resetTrace();
+        }}>
+          {Array.from({ length: 10 }, (_, index) => index + 1)
+            .map(limit => <option key={limit} value={limit}>{limit}</option>)}
+        </select>
+      </label>{' '}
+      <label>足す値{' '}
+        <select value={customRemainder} onChange={event => {
+          setCustomRemainder(Number(event.target.value));
+          resetTrace();
+        }}>
+          <option value={1}>奇数</option>
+          <option value={0}>偶数</option>
+        </select>
+      </label>
+    </fieldset>}
     <p>選択した条件の疑似言語</p>
     <pre><code>{'total ← 0\n'}
       {`for (n を 1 から ${exercise.limit} まで 1 ずつ増やす)\n`}
@@ -82,8 +113,10 @@ export function TracePractice() {
       visibleRows > 0 ? `nが${visibleRows}の行を表示しました。` : ''}</p>
     {finished && <div className="callout">
       <strong>繰り返しの振り返り</strong>
-      <p>足した値の合計は <code>{rows.filter(row => row.condition).map(row => row.n).join(' + ')} = {total}</code> です。</p>
-      <p>条件が偽で足さなかった値は {rows.filter(row => !row.condition).map(row => row.n).join('、')} です。</p>
+      <p>{total > 0
+        ? <>足した値の合計は <code>{rows.filter(row => row.condition).map(row => row.n).join(' + ')} = {total}</code> です。</>
+        : '条件を満たす値がないため、totalは初期値の0のままです。'}</p>
+      <p>{skippedValues ? `条件が偽で足さなかった値は ${skippedValues} です。` : 'すべての値が条件を満たしました。'}</p>
     </div>}
     {revealedRow && <p>
       <strong>nが{revealedRow.n}の回</strong>{' '}
