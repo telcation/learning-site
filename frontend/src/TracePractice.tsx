@@ -34,6 +34,7 @@ export function TracePractice() {
   const [customDescending, setCustomDescending] = useState(false);
   const [customConditionIndex, setCustomConditionIndex] = useState(0);
   const [prediction, setPrediction] = useState('');
+  const [finalPrediction, setFinalPrediction] = useState('');
   const [conditionPrediction, setConditionPrediction] = useState('');
   const [feedback, setFeedback] = useState('');
   const [showIncorrectOnly, setShowIncorrectOnly] = useState(false);
@@ -75,8 +76,11 @@ export function TracePractice() {
   const skippedValues = rows.filter(row => !row.condition).map(row => row.n).join('、');
   const revealedRow = visibleRows > 0 ? rows[visibleRows - 1] : undefined;
   const invalidPrediction = prediction.trim() !== '' && !/^[0-9]+$/.test(prediction.trim());
+  const finalGuess = finalPrediction.trim();
+  const invalidFinalGuess = finalGuess !== '' && !/^[0-9]+$/.test(finalGuess);
 
   function resetTrace() {
+    setFinalPrediction('');
     setShowIncorrectOnly(false);
     setAnswers([]);
     setVisibleRows(0);
@@ -186,6 +190,11 @@ export function TracePractice() {
       {'\n    endif\nendfor'}
     </code></pre>
     <p>最初のtotalは0です。各回の条件と加算後の値を予想してから、次の行を表示してください。</p>
+    {visibleRows === 0 && <p><label>最後のtotalの予想（任意）{' '}
+      <input type="text" inputMode="numeric" size={5} maxLength={8} value={finalPrediction}
+        aria-invalid={invalidFinalGuess} onChange={event => setFinalPrediction(event.target.value)} />
+    </label></p>}
+    {invalidFinalGuess && <p role="alert">最後のtotalの予想は半角数字で入力してください。</p>}
     <table>
       <caption>変数の変化（nを{step}ずつ{direction}）</caption>
       <thead><tr><th scope="col">n</th><th scope="col">条件</th><th scope="col">加算前</th><th scope="col">加算後</th></tr></thead>
@@ -199,6 +208,9 @@ export function TracePractice() {
       revealedRow ? `nが${revealedRow.n}の行を表示しました。` : ''}</p>
     {finished && <div className="callout">
       <strong>繰り返しの振り返り</strong>
+      {finalGuess !== '' && <p>最後のtotalの予想は <code>{finalGuess}</code>、実際は <code>{total}</code> でした。
+        {Number(finalGuess) === total ? '予想どおりです。' : '各行を見直して、足した値を確かめましょう。'}
+      </p>}
       <p>{attemptedCount > 0
         ? `入力した予想 ${attemptedCount}件のうち、正解は ${correctCount}件です。`
         : '予想の入力はありませんでした。'}</p>
@@ -250,8 +262,8 @@ export function TracePractice() {
         aria-invalid={invalidPrediction} onChange={event => setPrediction(event.target.value)} />
     </label></p>}
     {invalidPrediction && <p role="alert">予想は半角数字で入力してください。</p>}
-    <button className="secondary" disabled={finished || invalidPrediction} onClick={revealRow}>次の行を表示</button>{' '}
+    <button className="secondary" disabled={finished || invalidPrediction || invalidFinalGuess} onClick={revealRow}>次の行を表示</button>{' '}
     <button className="secondary" disabled={visibleRows === 0} onClick={() => rewindTo(visibleRows - 1)}>前の行に戻る</button>{' '}
-    <button className="secondary" disabled={visibleRows === 0 && prediction === '' && conditionPrediction === ''} onClick={resetTrace}>最初に戻す</button>
+    <button className="secondary" disabled={visibleRows === 0 && prediction === '' && conditionPrediction === '' && finalPrediction === ''} onClick={resetTrace}>最初に戻す</button>
   </details>;
 }
