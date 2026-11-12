@@ -22,6 +22,7 @@ export function TracePractice() {
   const [customDescending, setCustomDescending] = useState(false);
   const [customConditionIndex, setCustomConditionIndex] = useState(0);
   const [prediction, setPrediction] = useState('');
+  const [conditionPrediction, setConditionPrediction] = useState('');
   const [feedback, setFeedback] = useState('');
   const custom = exerciseIndex === customIndex;
   const start = custom ? customStart : 1;
@@ -53,22 +54,29 @@ export function TracePractice() {
   function resetTrace() {
     setVisibleRows(0);
     setPrediction('');
+    setConditionPrediction('');
     setFeedback('');
   }
 
   function goBack() {
     setVisibleRows(count => Math.max(0, count - 1));
     setPrediction('');
+    setConditionPrediction('');
     setFeedback('');
   }
 
   function revealRow() {
-    const answer = rows[visibleRows].after;
+    const row = rows[visibleRows];
+    const answer = row.after;
     const value = prediction.trim();
     const result = value === '' ? '' :
       Number(value) === answer ? '予想どおりです。' : `加算後のtotalは${answer}です。`;
-    setFeedback(result);
+    const conditionAnswer = row.condition ? '真' : '偽';
+    const conditionFeedback = conditionPrediction === '' ? '' :
+      conditionPrediction === conditionAnswer ? '条件の予想は正解です。' : `条件は${conditionAnswer}です。`;
+    setFeedback(conditionFeedback + result);
     setPrediction('');
+    setConditionPrediction('');
     setVisibleRows(visibleRows + 1);
   }
 
@@ -166,6 +174,13 @@ export function TracePractice() {
         ? `条件は真です。totalに${revealedRow.n}を足し、${revealedRow.before} + ${revealedRow.n} = ${revealedRow.after}になります。`
         : `条件は偽です。加算を飛ばすため、totalは${revealedRow.before}のままです。`}
     </p>}
+    {!finished && <p><label>条件の真偽（任意）{' '}
+      <select value={conditionPrediction} onChange={event => setConditionPrediction(event.target.value)}>
+        <option value="">選択しない</option>
+        <option value="真">真</option>
+        <option value="偽">偽</option>
+      </select>
+    </label></p>}
     {!finished && <p><label>nが{rows[visibleRows].n}のときの加算後のtotal（任意）{' '}
       <input type="text" inputMode="numeric" size={5} maxLength={8} value={prediction}
         aria-invalid={invalidPrediction} onChange={event => setPrediction(event.target.value)} />
@@ -173,6 +188,6 @@ export function TracePractice() {
     {invalidPrediction && <p role="alert">予想は半角数字で入力してください。</p>}
     <button className="secondary" disabled={finished || invalidPrediction} onClick={revealRow}>次の行を表示</button>{' '}
     <button className="secondary" disabled={visibleRows === 0} onClick={goBack}>前の行に戻る</button>{' '}
-    <button className="secondary" disabled={visibleRows === 0 && prediction === ''} onClick={resetTrace}>最初に戻す</button>
+    <button className="secondary" disabled={visibleRows === 0 && prediction === '' && conditionPrediction === ''} onClick={resetTrace}>最初に戻す</button>
   </details>;
 }
