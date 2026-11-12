@@ -24,7 +24,11 @@ export function TracePractice() {
   const [prediction, setPrediction] = useState('');
   const [conditionPrediction, setConditionPrediction] = useState('');
   const [feedback, setFeedback] = useState('');
-  const [answers, setAnswers] = useState<{ text: string; attempted: number; correct: number }[]>([]);
+  const [answers, setAnswers] = useState<{
+    text: string;
+    conditionCorrect: boolean | null;
+    totalCorrect: boolean | null;
+  }[]>([]);
   const custom = exerciseIndex === customIndex;
   const start = custom ? customStart : 1;
   const step = custom ? customStep : 1;
@@ -48,9 +52,13 @@ export function TracePractice() {
     return { n, before, condition, after: total };
   });
   const finished = visibleRows === rows.length;
-  const firstIncorrect = answers.findIndex(answer => answer.correct < answer.attempted);
-  const attemptedCount = answers.reduce((count, answer) => count + answer.attempted, 0);
-  const correctCount = answers.reduce((count, answer) => count + answer.correct, 0);
+  const firstIncorrect = answers.findIndex(answer => answer.conditionCorrect === false || answer.totalCorrect === false);
+  const conditionAttempts = answers.filter(answer => answer.conditionCorrect !== null).length;
+  const totalAttempts = answers.filter(answer => answer.totalCorrect !== null).length;
+  const conditionCorrectCount = answers.filter(answer => answer.conditionCorrect === true).length;
+  const totalCorrectCount = answers.filter(answer => answer.totalCorrect === true).length;
+  const attemptedCount = conditionAttempts + totalAttempts;
+  const correctCount = conditionCorrectCount + totalCorrectCount;
   const skippedValues = rows.filter(row => !row.condition).map(row => row.n).join('、');
   const revealedRow = visibleRows > 0 ? rows[visibleRows - 1] : undefined;
   const invalidPrediction = prediction.trim() !== '' && !/^[0-9]+$/.test(prediction.trim());
@@ -88,9 +96,11 @@ export function TracePractice() {
     if (value !== '') {
       submitted.push(`total ${value}（${Number(value) === answer ? '正解' : '誤り'}）`);
     }
-    const correct = Number(conditionPrediction === conditionAnswer)
-      + Number(value !== '' && Number(value) === answer);
-    setAnswers(previous => [...previous, { text: submitted.join('、'), attempted: submitted.length, correct }]);
+    setAnswers(previous => [...previous, {
+      text: submitted.join('、'),
+      conditionCorrect: conditionPrediction === '' ? null : conditionPrediction === conditionAnswer,
+      totalCorrect: value === '' ? null : Number(value) === answer,
+    }]);
     setPrediction('');
     setConditionPrediction('');
     setVisibleRows(visibleRows + 1);
@@ -181,6 +191,10 @@ export function TracePractice() {
       <p>{attemptedCount > 0
         ? `入力した予想 ${attemptedCount}件のうち、正解は ${correctCount}件です。`
         : '予想の入力はありませんでした。'}</p>
+      {attemptedCount > 0 && <ul>
+        <li>条件の真偽：{conditionAttempts > 0 ? `${conditionAttempts}件中${conditionCorrectCount}件正解` : '入力なし'}</li>
+        <li>加算後のtotal：{totalAttempts > 0 ? `${totalAttempts}件中${totalCorrectCount}件正解` : '入力なし'}</li>
+      </ul>}
       <p>{total > 0
         ? <>足した値の合計は <code>{rows.filter(row => row.condition).map(row => row.n).join(' + ')} = {total}</code> です。</>
         : '条件を満たす値がないため、totalは初期値の0のままです。'}</p>
