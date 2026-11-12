@@ -13,19 +13,21 @@ export function TracePractice() {
   const [exerciseIndex, setExerciseIndex] = useState(0);
   const [customLimit, setCustomLimit] = useState(5);
   const [customStart, setCustomStart] = useState(1);
+  const [customStep, setCustomStep] = useState(1);
   const [customRemainder, setCustomRemainder] = useState(1);
   const [prediction, setPrediction] = useState('');
   const [feedback, setFeedback] = useState('');
   const custom = exerciseIndex === customIndex;
   const start = custom ? customStart : 1;
+  const step = custom ? customStep : 1;
   const exercise = custom ? {
-    label: `${start}〜${customLimit}の${customRemainder === 1 ? '奇数' : '偶数'}を足す`,
     limit: customLimit,
     remainder: customRemainder,
   } : exercises[exerciseIndex];
   let total = 0;
-  const rows = Array.from({ length: exercise.limit - start + 1 }, (_, index) => {
-    const n = start + index;
+  const iterations = Math.floor((exercise.limit - start) / step) + 1;
+  const rows = Array.from({ length: iterations }, (_, index) => {
+    const n = start + index * step;
     const before = total;
     const condition = n % 2 === exercise.remainder;
     if (condition) total += n;
@@ -90,6 +92,14 @@ export function TracePractice() {
             .map(limit => <option key={limit} value={limit}>{limit}</option>)}
         </select>
       </label>{' '}
+      <label>増やす幅{' '}
+        <select value={customStep} onChange={event => {
+          setCustomStep(Number(event.target.value));
+          resetTrace();
+        }}>
+          {[1, 2, 3].map(value => <option key={value} value={value}>{value}</option>)}
+        </select>
+      </label>{' '}
       <label>足す値{' '}
         <select value={customRemainder} onChange={event => {
           setCustomRemainder(Number(event.target.value));
@@ -102,7 +112,7 @@ export function TracePractice() {
     </fieldset>}
     <p>選択した条件の疑似言語</p>
     <pre><code>{'total ← 0\n'}
-      {`for (n を ${start} から ${exercise.limit} まで 1 ずつ増やす)\n`}
+      {`for (n を ${start} から ${exercise.limit} まで ${step} ずつ増やす)\n`}
       {revealedRow
         ? <mark>{`    if (n mod 2 = ${exercise.remainder})`}</mark>
         : `    if (n mod 2 = ${exercise.remainder})`}
@@ -114,7 +124,7 @@ export function TracePractice() {
     </code></pre>
     <p>最初のtotalは0です。各回の条件と加算後の値を予想してから、次の行を表示してください。</p>
     <table>
-      <caption>{exercise.label}ときの変数の変化</caption>
+      <caption>変数の変化（nを{step}ずつ増やす）</caption>
       <thead><tr><th scope="col">n</th><th scope="col">条件</th><th scope="col">加算前</th><th scope="col">加算後</th></tr></thead>
       <tbody>{rows.map((row, index) => <tr key={row.n}>
         <th scope="row">{row.n}</th>
