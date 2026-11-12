@@ -89,15 +89,12 @@ export function TracePractice() {
     const conditionFeedback = conditionPrediction === '' ? '' :
       conditionPrediction === conditionAnswer ? '条件の予想は正解です。' : `条件は${conditionAnswer}です。`;
     setFeedback(conditionFeedback + result);
-    const submitted: string[] = [];
-    if (conditionPrediction !== '') {
-      submitted.push(`条件 ${conditionPrediction}（${conditionPrediction === conditionAnswer ? '正解' : '誤り'}）`);
-    }
-    if (value !== '') {
-      submitted.push(`total ${value}（${Number(value) === answer ? '正解' : '誤り'}）`);
-    }
+    const conditionText = conditionPrediction === '' ? '入力なし' :
+      `${conditionPrediction}（${conditionPrediction === conditionAnswer ? '正解' : '誤り'}）`;
+    const totalText = value === '' ? '入力なし' :
+      `${value}（${Number(value) === answer ? '正解' : '誤り'}）`;
     setAnswers(previous => [...previous, {
-      text: submitted.join('、'),
+      text: conditionPrediction === '' && value === '' ? '' : `条件 ${conditionText}、total ${totalText}`,
       conditionCorrect: conditionPrediction === '' ? null : conditionPrediction === conditionAnswer,
       totalCorrect: value === '' ? null : Number(value) === answer,
     }]);
