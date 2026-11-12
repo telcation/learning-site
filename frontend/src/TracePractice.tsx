@@ -6,23 +6,26 @@ const exercises = [
   { label: '1〜5の偶数を足す', limit: 5, remainder: 0 },
 ];
 const customIndex = exercises.length;
+const bounds = Array.from({ length: 10 }, (_, index) => index + 1);
 
 export function TracePractice() {
   const [visibleRows, setVisibleRows] = useState(0);
   const [exerciseIndex, setExerciseIndex] = useState(0);
   const [customLimit, setCustomLimit] = useState(5);
+  const [customStart, setCustomStart] = useState(1);
   const [customRemainder, setCustomRemainder] = useState(1);
   const [prediction, setPrediction] = useState('');
   const [feedback, setFeedback] = useState('');
   const custom = exerciseIndex === customIndex;
+  const start = custom ? customStart : 1;
   const exercise = custom ? {
-    label: `1〜${customLimit}の${customRemainder === 1 ? '奇数' : '偶数'}を足す`,
+    label: `${start}〜${customLimit}の${customRemainder === 1 ? '奇数' : '偶数'}を足す`,
     limit: customLimit,
     remainder: customRemainder,
   } : exercises[exerciseIndex];
   let total = 0;
-  const rows = Array.from({ length: exercise.limit }, (_, index) => {
-    const n = index + 1;
+  const rows = Array.from({ length: exercise.limit - start + 1 }, (_, index) => {
+    const n = start + index;
     const before = total;
     const condition = n % 2 === exercise.remainder;
     if (condition) total += n;
@@ -68,12 +71,22 @@ export function TracePractice() {
     </label></p>
     {custom && <fieldset>
       <legend>繰り返しと加算の条件</legend>
+      <label>繰り返しの始点{' '}
+        <select value={customStart} onChange={event => {
+          const nextStart = Number(event.target.value);
+          setCustomStart(nextStart);
+          setCustomLimit(limit => Math.max(limit, nextStart));
+          resetTrace();
+        }}>
+          {bounds.map(value => <option key={value} value={value}>{value}</option>)}
+        </select>
+      </label>{' '}
       <label>繰り返しの終点{' '}
         <select value={customLimit} onChange={event => {
           setCustomLimit(Number(event.target.value));
           resetTrace();
         }}>
-          {Array.from({ length: 10 }, (_, index) => index + 1)
+          {bounds.filter(value => value >= start)
             .map(limit => <option key={limit} value={limit}>{limit}</option>)}
         </select>
       </label>{' '}
@@ -89,7 +102,7 @@ export function TracePractice() {
     </fieldset>}
     <p>選択した条件の疑似言語</p>
     <pre><code>{'total ← 0\n'}
-      {`for (n を 1 から ${exercise.limit} まで 1 ずつ増やす)\n`}
+      {`for (n を ${start} から ${exercise.limit} まで 1 ずつ増やす)\n`}
       {revealedRow
         ? <mark>{`    if (n mod 2 = ${exercise.remainder})`}</mark>
         : `    if (n mod 2 = ${exercise.remainder})`}
@@ -110,7 +123,7 @@ export function TracePractice() {
       </tr>)}</tbody>
     </table>
     <p role="status">{feedback}{finished ? `繰り返しが終了しました。最後のtotalは${total}です。` :
-      visibleRows > 0 ? `nが${visibleRows}の行を表示しました。` : ''}</p>
+      revealedRow ? `nが${revealedRow.n}の行を表示しました。` : ''}</p>
     {finished && <div className="callout">
       <strong>繰り返しの振り返り</strong>
       <p>{total > 0
@@ -125,7 +138,7 @@ export function TracePractice() {
         ? `条件は真です。totalに${revealedRow.n}を足し、${revealedRow.before} + ${revealedRow.n} = ${revealedRow.after}になります。`
         : `条件は偽です。加算を飛ばすため、totalは${revealedRow.before}のままです。`}
     </p>}
-    {!finished && <p><label>nが{visibleRows + 1}のときの加算後のtotal（任意）{' '}
+    {!finished && <p><label>nが{rows[visibleRows].n}のときの加算後のtotal（任意）{' '}
       <input type="text" inputMode="numeric" size={5} maxLength={8} value={prediction}
         aria-invalid={invalidPrediction} onChange={event => setPrediction(event.target.value)} />
     </label></p>}
