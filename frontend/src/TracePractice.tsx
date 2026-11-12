@@ -19,12 +19,14 @@ export function TracePractice() {
   const [customLimit, setCustomLimit] = useState(5);
   const [customStart, setCustomStart] = useState(1);
   const [customStep, setCustomStep] = useState(1);
+  const [customDescending, setCustomDescending] = useState(false);
   const [customConditionIndex, setCustomConditionIndex] = useState(0);
   const [prediction, setPrediction] = useState('');
   const [feedback, setFeedback] = useState('');
   const custom = exerciseIndex === customIndex;
   const start = custom ? customStart : 1;
   const step = custom ? customStep : 1;
+  const descending = custom && customDescending;
   const exercise = custom ? {
     limit: customLimit,
     conditionIndex: customConditionIndex,
@@ -33,8 +35,11 @@ export function TracePractice() {
   const conditionLine = `    if (n mod ${divisor} = ${remainder})`;
   let total = 0;
   const iterations = Math.floor((exercise.limit - start) / step) + 1;
+  const first = descending ? exercise.limit : start;
+  const last = descending ? start : exercise.limit;
+  const direction = descending ? '減らす' : '増やす';
   const rows = Array.from({ length: iterations }, (_, index) => {
-    const n = start + index * step;
+    const n = first + index * (descending ? -step : step);
     const before = total;
     const condition = n % divisor === remainder;
     if (condition) total += n;
@@ -80,7 +85,7 @@ export function TracePractice() {
     </label></p>
     {custom && <fieldset>
       <legend>繰り返しと加算の条件</legend>
-      <label>繰り返しの始点{' '}
+      <label>範囲の下限{' '}
         <select value={customStart} onChange={event => {
           const nextStart = Number(event.target.value);
           setCustomStart(nextStart);
@@ -90,7 +95,7 @@ export function TracePractice() {
           {bounds.map(value => <option key={value} value={value}>{value}</option>)}
         </select>
       </label>{' '}
-      <label>繰り返しの終点{' '}
+      <label>範囲の上限{' '}
         <select value={customLimit} onChange={event => {
           setCustomLimit(Number(event.target.value));
           resetTrace();
@@ -99,7 +104,16 @@ export function TracePractice() {
             .map(limit => <option key={limit} value={limit}>{limit}</option>)}
         </select>
       </label>{' '}
-      <label>増やす幅{' '}
+      <label>進む向き{' '}
+        <select value={customDescending ? 'descending' : 'ascending'} onChange={event => {
+          setCustomDescending(event.target.value === 'descending');
+          resetTrace();
+        }}>
+          <option value="ascending">小さい方から大きい方へ</option>
+          <option value="descending">大きい方から小さい方へ</option>
+        </select>
+      </label>{' '}
+      <label>進む幅{' '}
         <select value={customStep} onChange={event => {
           setCustomStep(Number(event.target.value));
           resetTrace();
@@ -118,7 +132,7 @@ export function TracePractice() {
     </fieldset>}
     <p>選択した条件の疑似言語</p>
     <pre><code>{'total ← 0\n'}
-      {`for (n を ${start} から ${exercise.limit} まで ${step} ずつ増やす)\n`}
+      {`for (n を ${first} から ${last} まで ${step} ずつ${direction})\n`}
       {revealedRow ? <mark>{conditionLine}</mark> : conditionLine}
       {'\n'}
       {revealedRow?.condition
@@ -128,7 +142,7 @@ export function TracePractice() {
     </code></pre>
     <p>最初のtotalは0です。各回の条件と加算後の値を予想してから、次の行を表示してください。</p>
     <table>
-      <caption>変数の変化（nを{step}ずつ増やす）</caption>
+      <caption>変数の変化（nを{step}ずつ{direction}）</caption>
       <thead><tr><th scope="col">n</th><th scope="col">条件</th><th scope="col">加算前</th><th scope="col">加算後</th></tr></thead>
       <tbody>{rows.map((row, index) => <tr key={row.n}>
         <th scope="row">{row.n}</th>
