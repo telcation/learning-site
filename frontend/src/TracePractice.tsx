@@ -24,7 +24,7 @@ export function TracePractice() {
   const [prediction, setPrediction] = useState('');
   const [conditionPrediction, setConditionPrediction] = useState('');
   const [feedback, setFeedback] = useState('');
-  const [answers, setAnswers] = useState<string[]>([]);
+  const [answers, setAnswers] = useState<{ text: string; incorrect: boolean }[]>([]);
   const custom = exerciseIndex === customIndex;
   const start = custom ? customStart : 1;
   const step = custom ? customStep : 1;
@@ -48,6 +48,7 @@ export function TracePractice() {
     return { n, before, condition, after: total };
   });
   const finished = visibleRows === rows.length;
+  const firstIncorrect = answers.findIndex(answer => answer.incorrect);
   const skippedValues = rows.filter(row => !row.condition).map(row => row.n).join('、');
   const revealedRow = visibleRows > 0 ? rows[visibleRows - 1] : undefined;
   const invalidPrediction = prediction.trim() !== '' && !/^[0-9]+$/.test(prediction.trim());
@@ -60,9 +61,9 @@ export function TracePractice() {
     setFeedback('');
   }
 
-  function goBack() {
-    setAnswers(previous => previous.slice(0, -1));
-    setVisibleRows(count => Math.max(0, count - 1));
+  function rewindTo(count: number) {
+    setAnswers(previous => previous.slice(0, count));
+    setVisibleRows(count);
     setPrediction('');
     setConditionPrediction('');
     setFeedback('');
@@ -85,7 +86,9 @@ export function TracePractice() {
     if (value !== '') {
       submitted.push(`total ${value}（${Number(value) === answer ? '正解' : '誤り'}）`);
     }
-    setAnswers(previous => [...previous, submitted.join('、')]);
+    const incorrect = (conditionPrediction !== '' && conditionPrediction !== conditionAnswer)
+      || (value !== '' && Number(value) !== answer);
+    setAnswers(previous => [...previous, { text: submitted.join('、'), incorrect }]);
     setPrediction('');
     setConditionPrediction('');
     setVisibleRows(visibleRows + 1);
@@ -178,12 +181,18 @@ export function TracePractice() {
         : '条件を満たす値がないため、totalは初期値の0のままです。'}</p>
       <p>{skippedValues ? `条件が偽で足さなかった値は ${skippedValues} です。` : 'すべての値が条件を満たしました。'}</p>
     </div>}
-    {answers.some(Boolean) && <details>
+    {answers.some(answer => answer.text) && <details>
       <summary>入力した予想を振り返る</summary>
-      <ul>{answers.map((entry, index) => entry &&
-        <li key={rows[index].n}>n = {rows[index].n}：{entry}</li>
+      <ul>{answers.map((entry, index) => entry.text &&
+        <li key={rows[index].n}>n = {rows[index].n}：{entry.text}</li>
       )}</ul>
     </details>}
+    {finished && firstIncorrect >= 0 && <p>
+      <button className="secondary" onClick={() => rewindTo(firstIncorrect)}>
+        n = {rows[firstIncorrect].n} からやり直す
+      </button>{' '}
+      この回以降の行と予想をリセットします。
+    </p>}
     {revealedRow && <p>
       <strong>nが{revealedRow.n}の回</strong>{' '}
       <code>{revealedRow.n} mod {divisor} = {revealedRow.n % divisor}</code> なので、
@@ -204,7 +213,7 @@ export function TracePractice() {
     </label></p>}
     {invalidPrediction && <p role="alert">予想は半角数字で入力してください。</p>}
     <button className="secondary" disabled={finished || invalidPrediction} onClick={revealRow}>次の行を表示</button>{' '}
-    <button className="secondary" disabled={visibleRows === 0} onClick={goBack}>前の行に戻る</button>{' '}
+    <button className="secondary" disabled={visibleRows === 0} onClick={() => rewindTo(visibleRows - 1)}>前の行に戻る</button>{' '}
     <button className="secondary" disabled={visibleRows === 0 && prediction === '' && conditionPrediction === ''} onClick={resetTrace}>最初に戻す</button>
   </details>;
 }
