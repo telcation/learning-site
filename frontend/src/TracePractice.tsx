@@ -21,6 +21,7 @@ export function TracePractice() {
     return { n, before, condition, after: total };
   });
   const finished = visibleRows === rows.length;
+  const revealedRow = visibleRows > 0 ? rows[visibleRows - 1] : undefined;
   const invalidPrediction = prediction.trim() !== '' && !/^[0-9]+$/.test(prediction.trim());
 
   function resetTrace() {
@@ -62,6 +63,13 @@ export function TracePractice() {
     </table>
     <p role="status">{feedback}{finished ? `繰り返しが終了しました。最後のtotalは${total}です。` :
       visibleRows > 0 ? `nが${visibleRows}の行を表示しました。` : ''}</p>
+    {revealedRow && <p>
+      <strong>nが{revealedRow.n}の回</strong>{' '}
+      <code>{revealedRow.n} mod 2 = {revealedRow.n % 2}</code> なので、
+      {revealedRow.condition
+        ? `条件は真です。totalに${revealedRow.n}を足し、${revealedRow.before} + ${revealedRow.n} = ${revealedRow.after}になります。`
+        : `条件は偽です。加算を飛ばすため、totalは${revealedRow.before}のままです。`}
+    </p>}
     {!finished && <p><label>nが{visibleRows + 1}のときの加算後のtotal（任意）{' '}
       <input type="text" inputMode="numeric" size={5} maxLength={8} value={prediction}
         aria-invalid={invalidPrediction} onChange={event => setPrediction(event.target.value)} />
