@@ -80,6 +80,11 @@ export function TracePractice() {
     </table>
     <p role="status">{feedback}{finished ? `繰り返しが終了しました。最後のtotalは${total}です。` :
       visibleRows > 0 ? `nが${visibleRows}の行を表示しました。` : ''}</p>
+    {finished && <div className="callout">
+      <strong>繰り返しの振り返り</strong>
+      <p>足した値の合計は <code>{rows.filter(row => row.condition).map(row => row.n).join(' + ')} = {total}</code> です。</p>
+      <p>条件が偽で足さなかった値は {rows.filter(row => !row.condition).map(row => row.n).join('、')} です。</p>
+    </div>}
     {revealedRow && <p>
       <strong>nが{revealedRow.n}の回</strong>{' '}
       <code>{revealedRow.n} mod 2 = {revealedRow.n % 2}</code> なので、
