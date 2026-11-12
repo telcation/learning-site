@@ -1,4 +1,5 @@
 import { executableSource } from './execution-guide';
+import { TracePractice } from './TracePractice';
 
 export function ExecutionGuide({language,snippet}:{language:'java'|'python'|null;snippet:string}) {
   if(!snippet.trim())return null;
@@ -10,6 +11,7 @@ export function ExecutionGuide({language,snippet}:{language:'java'|'python'|null
       <li>条件が真の回だけnを加算します。偽の回はtotalをそのまま次の回へ引き継ぎます。</li>
       <li>最後の値を確認したら、下の実践課題の指定どおり範囲や条件を変えて確かめます。</li>
     </ol><p>メモの内容はこのサイトに保存されません。確認できた項目だけを、下の実践課題で自己チェックして記録してください。</p></details>
+    <TracePractice />
   </section>;
   const python=language==='python',filename=python?'odd_sum.py':'OddSum.java';
   const source=executableSource(language,snippet);
