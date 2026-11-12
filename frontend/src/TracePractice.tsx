@@ -24,6 +24,7 @@ export function TracePractice() {
   const [prediction, setPrediction] = useState('');
   const [conditionPrediction, setConditionPrediction] = useState('');
   const [feedback, setFeedback] = useState('');
+  const [answers, setAnswers] = useState<string[]>([]);
   const custom = exerciseIndex === customIndex;
   const start = custom ? customStart : 1;
   const step = custom ? customStep : 1;
@@ -52,6 +53,7 @@ export function TracePractice() {
   const invalidPrediction = prediction.trim() !== '' && !/^[0-9]+$/.test(prediction.trim());
 
   function resetTrace() {
+    setAnswers([]);
     setVisibleRows(0);
     setPrediction('');
     setConditionPrediction('');
@@ -59,6 +61,7 @@ export function TracePractice() {
   }
 
   function goBack() {
+    setAnswers(previous => previous.slice(0, -1));
     setVisibleRows(count => Math.max(0, count - 1));
     setPrediction('');
     setConditionPrediction('');
@@ -75,6 +78,14 @@ export function TracePractice() {
     const conditionFeedback = conditionPrediction === '' ? '' :
       conditionPrediction === conditionAnswer ? '条件の予想は正解です。' : `条件は${conditionAnswer}です。`;
     setFeedback(conditionFeedback + result);
+    const submitted: string[] = [];
+    if (conditionPrediction !== '') {
+      submitted.push(`条件 ${conditionPrediction}（${conditionPrediction === conditionAnswer ? '正解' : '誤り'}）`);
+    }
+    if (value !== '') {
+      submitted.push(`total ${value}（${Number(value) === answer ? '正解' : '誤り'}）`);
+    }
+    setAnswers(previous => [...previous, submitted.join('、')]);
     setPrediction('');
     setConditionPrediction('');
     setVisibleRows(visibleRows + 1);
@@ -167,6 +178,12 @@ export function TracePractice() {
         : '条件を満たす値がないため、totalは初期値の0のままです。'}</p>
       <p>{skippedValues ? `条件が偽で足さなかった値は ${skippedValues} です。` : 'すべての値が条件を満たしました。'}</p>
     </div>}
+    {answers.some(Boolean) && <details>
+      <summary>入力した予想を振り返る</summary>
+      <ul>{answers.map((entry, index) => entry &&
+        <li key={rows[index].n}>n = {rows[index].n}：{entry}</li>
+      )}</ul>
+    </details>}
     {revealedRow && <p>
       <strong>nが{revealedRow.n}の回</strong>{' '}
       <code>{revealedRow.n} mod {divisor} = {revealedRow.n % divisor}</code> なので、
