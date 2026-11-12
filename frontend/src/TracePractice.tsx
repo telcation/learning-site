@@ -30,6 +30,12 @@ export function TracePractice() {
     setFeedback('');
   }
 
+  function goBack() {
+    setVisibleRows(count => Math.max(0, count - 1));
+    setPrediction('');
+    setFeedback('');
+  }
+
   function revealRow() {
     const answer = rows[visibleRows].after;
     const value = prediction.trim();
@@ -87,6 +93,7 @@ export function TracePractice() {
     </label></p>}
     {invalidPrediction && <p role="alert">予想は半角数字で入力してください。</p>}
     <button className="secondary" disabled={finished || invalidPrediction} onClick={revealRow}>次の行を表示</button>{' '}
+    <button className="secondary" disabled={visibleRows === 0} onClick={goBack}>前の行に戻る</button>{' '}
     <button className="secondary" disabled={visibleRows === 0 && prediction === ''} onClick={resetTrace}>最初に戻す</button>
   </details>;
 }
