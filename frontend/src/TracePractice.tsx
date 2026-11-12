@@ -11,6 +11,18 @@ const exercises = [
   { label: '1〜5の偶数を足す', limit: 5, conditionIndex: 1 },
 ];
 const customIndex = exercises.length;
+
+function TraceExplanation({ row, divisor }: {
+  row: { n: number; condition: boolean; before: number; after: number };
+  divisor: number;
+}) {
+  return <p>
+    <code>{row.n} mod {divisor} = {row.n % divisor}</code> なので、
+    {row.condition
+      ? `条件は真です。totalに${row.n}を足し、${row.before} + ${row.n} = ${row.after}になります。`
+      : `条件は偽です。加算を飛ばすため、totalは${row.before}のままです。`}
+  </p>;
+}
 const bounds = Array.from({ length: 10 }, (_, index) => index + 1);
 
 export function TracePractice() {
@@ -207,7 +219,13 @@ export function TracePractice() {
         <ul>{answers.map((entry, index) => {
           const incorrect = entry.conditionCorrect === false || entry.totalCorrect === false;
           if (!entry.text || (showIncorrectOnly && !incorrect)) return null;
-          return <li key={rows[index].n}>n = {rows[index].n}：{entry.text}</li>;
+          const row = rows[index];
+          return <li key={row.n}>
+            <details>
+              <summary>n = {row.n}：{entry.text}</summary>
+              <TraceExplanation row={row} divisor={divisor} />
+            </details>
+          </li>;
         })}</ul>}
     </details>}
     {finished && firstIncorrect >= 0 && <p>
@@ -216,13 +234,10 @@ export function TracePractice() {
       </button>{' '}
       この回以降の行と予想をリセットします。
     </p>}
-    {revealedRow && <p>
-      <strong>nが{revealedRow.n}の回</strong>{' '}
-      <code>{revealedRow.n} mod {divisor} = {revealedRow.n % divisor}</code> なので、
-      {revealedRow.condition
-        ? `条件は真です。totalに${revealedRow.n}を足し、${revealedRow.before} + ${revealedRow.n} = ${revealedRow.after}になります。`
-        : `条件は偽です。加算を飛ばすため、totalは${revealedRow.before}のままです。`}
-    </p>}
+    {revealedRow && <div>
+      <strong>nが{revealedRow.n}の回</strong>
+      <TraceExplanation row={revealedRow} divisor={divisor} />
+    </div>}
     {!finished && <p><label>条件の真偽（任意）{' '}
       <select value={conditionPrediction} onChange={event => setConditionPrediction(event.target.value)}>
         <option value="">選択しない</option>
