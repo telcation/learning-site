@@ -51,14 +51,17 @@ export function TracePractice() {
       </select>
     </label></p>
     <p>選択した条件の疑似言語</p>
-    <pre><code>{[
-      'total ← 0',
-      `for (n を 1 から ${exercise.limit} まで 1 ずつ増やす)`,
-      `    if (n mod 2 = ${exercise.remainder})`,
-      '        total ← total + n',
-      '    endif',
-      'endfor',
-    ].join('\n')}</code></pre>
+    <pre><code>{'total ← 0\n'}
+      {`for (n を 1 から ${exercise.limit} まで 1 ずつ増やす)\n`}
+      {revealedRow
+        ? <mark>{`    if (n mod 2 = ${exercise.remainder})`}</mark>
+        : `    if (n mod 2 = ${exercise.remainder})`}
+      {'\n'}
+      {revealedRow?.condition
+        ? <mark>{'        total ← total + n'}</mark>
+        : '        total ← total + n'}
+      {'\n    endif\nendfor'}
+    </code></pre>
     <p>最初のtotalは0です。各回の条件と加算後の値を予想してから、次の行を表示してください。</p>
     <table>
       <caption>{exercise.label}ときの変数の変化</caption>
