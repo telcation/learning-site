@@ -24,6 +24,7 @@ export function TracePractice() {
   const [prediction, setPrediction] = useState('');
   const [conditionPrediction, setConditionPrediction] = useState('');
   const [feedback, setFeedback] = useState('');
+  const [showIncorrectOnly, setShowIncorrectOnly] = useState(false);
   const [answers, setAnswers] = useState<{
     text: string;
     conditionCorrect: boolean | null;
@@ -64,6 +65,7 @@ export function TracePractice() {
   const invalidPrediction = prediction.trim() !== '' && !/^[0-9]+$/.test(prediction.trim());
 
   function resetTrace() {
+    setShowIncorrectOnly(false);
     setAnswers([]);
     setVisibleRows(0);
     setPrediction('');
@@ -199,9 +201,14 @@ export function TracePractice() {
     </div>}
     {answers.some(answer => answer.text) && <details>
       <summary>入力した予想を振り返る</summary>
-      <ul>{answers.map((entry, index) => entry.text &&
-        <li key={rows[index].n}>n = {rows[index].n}：{entry.text}</li>
-      )}</ul>
+      <label><input type="checkbox" checked={showIncorrectOnly}
+        onChange={event => setShowIncorrectOnly(event.target.checked)} /> 誤りがあった回だけ表示</label>
+      {showIncorrectOnly && firstIncorrect < 0 ? <p>誤りがあった回はありません。</p> :
+        <ul>{answers.map((entry, index) => {
+          const incorrect = entry.conditionCorrect === false || entry.totalCorrect === false;
+          if (!entry.text || (showIncorrectOnly && !incorrect)) return null;
+          return <li key={rows[index].n}>n = {rows[index].n}：{entry.text}</li>;
+        })}</ul>}
     </details>}
     {finished && firstIncorrect >= 0 && <p>
       <button className="secondary" onClick={() => rewindTo(firstIncorrect)}>
